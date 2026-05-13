@@ -177,7 +177,7 @@ export async function handler(req: Request, { params }: { params: Promise<{ path
 
       // Fire-and-forget telemetry update
       if (response.ok) {
-        Promise.all([
+        await Promise.all([
           updateKeyState(key.id, {
             total_requests: (key.total_requests || 0) + 1,
             last_used:      now,
