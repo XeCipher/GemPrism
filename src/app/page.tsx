@@ -1,12 +1,13 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Activity, ShieldAlert, Zap, ServerCrash } from "lucide-react";
+import { Activity, ShieldAlert, Zap, ServerCrash, Copy, Check, Database } from "lucide-react";
 
 export default function Dashboard() {
   const [data, setData] = useState<any>(null);
   const [token, setToken] = useState("");
   const [authOk, setAuthOk] = useState(false);
+  const [copiedId, setCopiedId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!authOk) return;
@@ -19,9 +20,15 @@ export default function Dashboard() {
     };
 
     fetchStats();
-    const interval = setInterval(fetchStats, 5000); // 5s interval
+    const interval = setInterval(fetchStats, 5000);
     return () => clearInterval(interval);
   }, [authOk, token]);
+
+  const handleCopy = (text: string) => {
+    navigator.clipboard.writeText(text);
+    setCopiedId(text);
+    setTimeout(() => setCopiedId(null), 2000);
+  };
 
   if (!authOk) {
     return (
@@ -50,12 +57,13 @@ export default function Dashboard() {
   if (!data) return <div className="min-h-screen bg-[#0a0a0a] text-white flex items-center justify-center font-mono">Syncing telemetry...</div>;
 
   return (
-    <div className="min-h-screen bg-[#0a0a0a] text-neutral-300 font-mono p-8 selection:bg-neutral-800">
+    <div className="min-h-screen bg-[#0a0a0a] text-neutral-300 font-mono p-8 selection:bg-neutral-800 max-w-7xl mx-auto">
       <header className="mb-12 flex items-center gap-3">
         <Activity className="text-emerald-500" />
         <h1 className="text-2xl text-white tracking-tight">GemPrism / Load Balancer</h1>
       </header>
 
+      {/* Stats Summary */}
       <div className="grid grid-cols-4 gap-4 mb-8">
         {[
           { label: "Daily Volume", value: data.summary.total_requests, icon: Activity },
@@ -72,7 +80,9 @@ export default function Dashboard() {
         ))}
       </div>
 
-      <div className="bg-[#111] border border-neutral-800 rounded-lg overflow-hidden">
+      {/* Nodes Table */}
+      <h2 className="text-lg text-white mb-4 flex items-center gap-2"><ServerCrash size={18}/> Routing Nodes</h2>
+      <div className="bg-[#111] border border-neutral-800 rounded-lg overflow-hidden mb-12">
         <table className="w-full text-left text-sm">
           <thead className="bg-[#161616] border-b border-neutral-800 text-neutral-500">
             <tr>
@@ -86,7 +96,7 @@ export default function Dashboard() {
           </thead>
           <tbody>
             {data.keys.map((k: any) => (
-              <tr key={k.id} className="border-b border-neutral-800/50 hover:bg-[#161616]/50">
+              <tr key={k.id} className="border-b border-neutral-800/50 hover:bg-[#161616]/50 transition-colors">
                 <td className="p-4">•••{k.id.slice(-4)}</td>
                 <td className="p-4">
                   <span className={`px-2 py-1 rounded text-xs ${
@@ -111,6 +121,52 @@ export default function Dashboard() {
                 </td>
               </tr>
             ))}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Global Model Stats Table */}
+      <h2 className="text-lg text-white mb-4 flex items-center gap-2"><Database size={18}/> Model Telemetry & Registry</h2>
+      <div className="bg-[#111] border border-neutral-800 rounded-lg overflow-hidden">
+        <table className="w-full text-left text-sm">
+          <thead className="bg-[#161616] border-b border-neutral-800 text-neutral-500">
+            <tr>
+              <th className="p-4 font-normal">Model Name</th>
+              <th className="p-4 font-normal">API Identifier</th>
+              <th className="p-4 font-normal">RPD Free Limit</th>
+              <th className="p-4 font-normal text-right">Gateway Usage</th>
+            </tr>
+          </thead>
+          <tbody>
+            {Object.entries(data.models)
+              .filter(([id]) => id !== "default")
+              .map(([id, details]: [string, any]) => {
+                const usage = data.usage[id] || 0;
+                const isExhausted = details.rpd === 0;
+              return (
+                <tr key={id} className={`border-b border-neutral-800/50 hover:bg-[#161616]/50 transition-colors ${isExhausted ? 'opacity-40' : ''}`}>
+                  <td className="p-4 font-medium text-white">{details.name}</td>
+                  <td className="p-4">
+                    <button 
+                      onClick={() => handleCopy(id)}
+                      className="flex items-center gap-2 bg-neutral-800/50 hover:bg-neutral-700/50 px-3 py-1.5 rounded-md text-neutral-300 transition-colors"
+                      title="Copy API ID"
+                    >
+                      {id} 
+                      {copiedId === id ? <Check size={14} className="text-emerald-500" /> : <Copy size={14} className="text-neutral-500"/>}
+                    </button>
+                  </td>
+                  <td className="p-4">
+                    {details.rpd === 999999 ? 'Unlimited' : details.rpd === 0 ? 'Waitlist / Unavailable' : `${details.rpd} req/day`}
+                  </td>
+                  <td className="p-4 text-right">
+                    <span className={usage > 0 ? "text-emerald-400 font-medium" : "text-neutral-600"}>
+                      {usage} calls
+                    </span>
+                  </td>
+                </tr>
+              )
+            })}
           </tbody>
         </table>
       </div>

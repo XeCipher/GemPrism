@@ -1,7 +1,10 @@
 import { NextResponse } from 'next/server';
 import { getHydratedKeys } from '@/lib/keyPool';
+import { ALL_MODELS } from '@/lib/modelLimits';
+import { Redis } from '@upstash/redis';
 
 export const runtime = 'edge';
+const kv = Redis.fromEnv();
 
 export async function GET(req: Request) {
   const authHeader = req.headers.get('authorization') || req.headers.get('X-Gateway-Token');
@@ -11,10 +14,14 @@ export async function GET(req: Request) {
 
   const keys = await getHydratedKeys();
   const safeKeys = keys.map(({ key, ...safe }) => safe);
+  
+  const modelUsage = await kv.hgetall('prism:model_usage') || {};
 
   return NextResponse.json({
     timestamp: Date.now(),
     keys: safeKeys,
+    models: ALL_MODELS,
+    usage: modelUsage,
     summary: {
       total_requests: safeKeys.reduce((acc, k) => acc + k.rpd_count, 0),
       active: safeKeys.filter(k => k.status === 'healthy').length,

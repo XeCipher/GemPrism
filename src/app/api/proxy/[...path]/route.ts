@@ -1,18 +1,16 @@
 import { NextResponse } from 'next/server';
 import { getHydratedKeys, updateKeyState } from '@/lib/keyPool';
 import { getModelLimits } from '@/lib/modelLimits';
+import { Redis } from '@upstash/redis';
 
 export const runtime = 'edge';
+const kv = Redis.fromEnv();
 
-export async function POST(
-  req: Request, 
-  { params }: { params: Promise<{ path: string[] }> } // <-- Fixed for Next.js 15+
-) {
+export async function POST(req: Request, { params }: { params: Promise<{ path: string[] }> }) {
   if (req.headers.get('X-Gateway-Token') !== process.env.GATEWAY_SECRET) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  // Await the params!
   const resolvedParams = await params;
   const urlPath = resolvedParams.path.join('/');
   
@@ -21,6 +19,11 @@ export async function POST(
   if (modelMatch) modelName = modelMatch[1];
   
   const limits = getModelLimits(modelName);
+  
+  if (limits.rpd === 0) {
+    return NextResponse.json({ error: `Model ${modelName} is not accessible on the current free tier limits.` }, { status: 403 });
+  }
+
   const payload = await req.text();
   const keys = await getHydratedKeys();
 
@@ -72,6 +75,9 @@ export async function POST(
       node.rpm_count++;
       node.total_requests++;
       node.last_used = Date.now();
+      
+      await kv.hincrby('prism:model_usage', modelName, 1);
+      
       await updateKeyState(node);
 
       return NextResponse.json(data, { status: 200 });
