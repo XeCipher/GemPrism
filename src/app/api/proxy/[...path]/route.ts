@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { supabaseAdmin } from '@/lib/supabaseAdmin';
+import { getSupabaseAdminClient } from '@/lib/supabaseAdmin';
 import { getModelLimits } from '@/lib/modelLimits';
 
 export const runtime = 'edge';
@@ -32,7 +32,7 @@ export async function handler(req: Request, { params }: { params: Promise<{ path
   }
 
   // 3. User Authentication
-  const { data: tokenData } = await supabaseAdmin
+  const { data: tokenData } = await getSupabaseAdminClient()
     .from('gateway_tokens')
     .select('user_id')
     .eq('token', incomingToken)
@@ -63,8 +63,8 @@ export async function handler(req: Request, { params }: { params: Promise<{ path
 
   // 5. Fetch Key Pool & Live Telemetry
   const [keysReq, usageReq] = await Promise.all([
-    supabaseAdmin.from('api_keys').select('*').eq('user_id', userId),
-    supabaseAdmin
+    getSupabaseAdminClient().from('api_keys').select('*').eq('user_id', userId),
+    getSupabaseAdminClient()
       .from('model_usage')
       .select('*')
       .eq('user_id', userId)
@@ -219,7 +219,7 @@ export { handler as GET, handler as POST, handler as OPTIONS, handler as PUT, ha
 // ─── Database Helpers ─────────────────────────────────────────────────────────
 
 async function updateKeyState(id: string, updates: Record<string, unknown>) {
-  const { error } = await supabaseAdmin.from('api_keys').update(updates).eq('id', id);
+  const { error } = await getSupabaseAdminClient().from('api_keys').update(updates).eq('id', id);
   if (error) {
     console.error('[GemPrism] updateKeyState failed:', error.message);
   }
@@ -234,7 +234,7 @@ async function recordModelUsage(
   todayStr:  string,
   now:       number
 ) {
-  const { error } = await supabaseAdmin.from('model_usage').upsert(
+  const { error } = await getSupabaseAdminClient().from('model_usage').upsert(
     {
       user_id:          userId,
       api_key_id:       apiKeyId,
