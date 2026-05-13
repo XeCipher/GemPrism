@@ -4,14 +4,34 @@ import { getModelLimits } from '@/lib/modelLimits';
 
 export const runtime = 'edge';
 
-export async function POST(req: Request, { params }: { params: Promise<{ path: string[] }> }) {
-  const incomingToken = req.headers.get('x-goog-api-key');
+// Handle all HTTP methods seamlessly through a single master handler
+export async function handler(req: Request, { params }: { params: Promise<{ path: string[] }> }) {
+  // 1. CORS Preflight & Global Headers
+  if (req.method === 'OPTIONS') {
+    return new NextResponse(null, {
+      status: 200,
+      headers: {
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS, PATCH',
+        'Access-Control-Allow-Headers': '*',
+      }
+    });
+  }
+
+  const reqUrl = new URL(req.url);
+
+  // 2. Token Extraction (Header, Bearer, or Query Param to support all SDKs)
+  let incomingToken = req.headers.get('x-goog-api-key') || reqUrl.searchParams.get('key');
+  if (!incomingToken) {
+    const auth = req.headers.get('authorization');
+    if (auth?.startsWith('Bearer ')) incomingToken = auth.split(' ')[1];
+  }
 
   if (!incomingToken) {
     return NextResponse.json({ error: 'Missing Gateway Token' }, { status: 401 });
   }
 
-  // 1. Identify the user from the gateway token
+  // 3. User Authentication
   const { data: tokenData } = await supabaseAdmin
     .from('gateway_tokens')
     .select('user_id')
@@ -23,7 +43,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ path: s
   }
   const userId = tokenData.user_id;
 
-  // 2. Resolve the target path and extract the model name
+  // 4. Resolve Target Path and Canonical Model Name
   const resolvedParams = await params;
   const urlPath = resolvedParams.path.join('/');
 
@@ -31,7 +51,6 @@ export async function POST(req: Request, { params }: { params: Promise<{ path: s
   const modelMatch = urlPath.match(/models\/([^:]+)/);
   if (modelMatch) requestedModel = modelMatch[1];
 
-  // Resolve Canonical Model Name for accurate tracking & limits
   const modelLimits = getModelLimits(requestedModel);
   const modelName = modelLimits.id; 
 
@@ -42,7 +61,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ path: s
     );
   }
 
-  // 3. Fetch the user's keys and current model-specific usage in parallel
+  // 5. Fetch Key Pool & Live Telemetry
   const [keysReq, usageReq] = await Promise.all([
     supabaseAdmin.from('api_keys').select('*').eq('user_id', userId),
     supabaseAdmin
@@ -52,7 +71,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ path: s
       .eq('model_name', modelName),
   ]);
 
-  const keys   = keysReq.data  ||[];
+  const keys   = keysReq.data  || [];
   const usages = usageReq.data ||[];
 
   if (keys.length === 0) {
@@ -65,7 +84,6 @@ export async function POST(req: Request, { params }: { params: Promise<{ path: s
   const now      = Date.now();
   const todayStr = new Date().toISOString().split('T')[0];
 
-  // 4. Build a usage map keyed by api_key_id, resetting stale time windows
   const usageMap = new Map<string, { rpd: number; rpm: number }>();
   usages.forEach(u => {
     const rpd = u.rpd_date === todayStr ? (u.rpd_count || 0) : 0;
@@ -73,21 +91,16 @@ export async function POST(req: Request, { params }: { params: Promise<{ path: s
     usageMap.set(u.api_key_id, { rpd, rpm });
   });
 
-  // 5. Hydrate keys — lazily recover cooled-down keys and attach model usage
   const hydratedKeys = keys.map(key => {
     let mutated = false;
-
     if (key.status === 'cooling' && now > (key.cooldown_until || 0)) {
       key.status = 'healthy';
       mutated    = true;
     }
-
     const modelStats = usageMap.get(key.id) || { rpd: 0, rpm: 0 };
-
     return { ...key, mutated, model_rpd: modelStats.rpd, model_rpm: modelStats.rpm };
   });
 
-  // Sort healthy keys by lowest usage first (least-loaded routing)
   const availableKeys = hydratedKeys
     .filter(k => k.status === 'healthy' && k.model_rpm < modelLimits.rpm && k.model_rpd < modelLimits.rpd)
     .sort((a, b) =>
@@ -97,24 +110,46 @@ export async function POST(req: Request, { params }: { params: Promise<{ path: s
   if (availableKeys.length === 0) {
     return NextResponse.json(
       { error: `All API keys are exhausted or cooling for model: ${modelName}` },
-      { status: 503 }
+      { status: 429 } // Return 429 so SDKs trigger standard back-off handling
     );
   }
 
-  const payload = await req.text();
+  // 6. Process Request Payload
+  // Using arrayBuffer protects binary uploads (like images via File API) from text corruption
+  // while still buffering it in memory so we can retry multiple keys.
+  const hasBody = !['GET', 'HEAD', 'OPTIONS'].includes(req.method);
+  const payload = hasBody ? await req.arrayBuffer() : undefined;
 
-  // 6. Gateway traversal — try keys in order, skipping on rate-limit or auth errors
+  // Forward Headers verbatim (exclude auth and routing specifics)
+  const outboundHeaders = new Headers();
+  req.headers.forEach((val, key) => {
+    const lower = key.toLowerCase();
+    if (!['host', 'connection', 'x-goog-api-key', 'authorization', 'content-length'].includes(lower)) {
+      outboundHeaders.set(key, val);
+    }
+  });
+
+  // 7. Gateway Traversal loop (Failover execution)
   for (const key of availableKeys) {
     try {
-      // NOTE: We pass the exact urlPath upstream so aliases like gemini-flash-latest still work natively on Google
-      const targetUrl = `https://generativelanguage.googleapis.com/${urlPath}?key=${key.key_value}`;
+      // Construct exact target URL including ALL original SDK query parameters
+      const targetUrlObj = new URL(`https://generativelanguage.googleapis.com/${urlPath}`);
+      reqUrl.searchParams.forEach((val, pKey) => {
+        if (pKey.toLowerCase() !== 'key') {
+          targetUrlObj.searchParams.append(pKey, val);
+        }
+      });
+      
+      // Inject the active Google API key selected by the load balancer
+      targetUrlObj.searchParams.append('key', key.key_value);
 
-      const response = await fetch(targetUrl, {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
+      const response = await fetch(targetUrlObj.toString(), {
+        method:  req.method,
+        headers: outboundHeaders,
         body:    payload,
       });
 
+      // Handle 429 Rate Limit
       if (response.status === 429) {
         await updateKeyState(key.id, {
           status:         'cooling',
@@ -122,43 +157,47 @@ export async function POST(req: Request, { params }: { params: Promise<{ path: s
           total_errors:   (key.total_errors || 0) + 1,
           last_error:     `429 Rate Limited on model ${modelName}`,
         });
-        continue;
+        continue; // Roll over to the next key
       }
 
+      // Handle 403 Invalid/Revoked Key
       if (response.status === 403) {
         await updateKeyState(key.id, {
           status:       'dead',
           total_errors: (key.total_errors || 0) + 1,
           last_error:   'API Key Invalid (403)',
         });
-        continue;
+        continue; // Roll over to the next key
       }
 
-      if (!response.ok) {
-        const errorData = await response.json();
-        return NextResponse.json(errorData, { status: response.status });
+      // Route Success - Pipe Response directly to client
+      const responseHeaders = new Headers(response.headers);
+      responseHeaders.set('Access-Control-Allow-Origin', '*'); 
+
+      // Fire-and-forget telemetry update
+      if (response.ok) {
+        Promise.all([
+          updateKeyState(key.id, {
+            total_requests: (key.total_requests || 0) + 1,
+            last_used:      now,
+            ...(key.mutated ? { status: 'healthy' } : {}),
+          }),
+          recordModelUsage(
+            userId,
+            key.id,
+            modelName,
+            key.model_rpd + 1,
+            key.model_rpm + 1,
+            todayStr,
+            now
+          ),
+        ]).catch(err => console.error("[GemPrism] Async telemetry error:", err));
       }
 
-      const data = await response.json();
-
-      await Promise.all([
-        updateKeyState(key.id, {
-          total_requests: (key.total_requests || 0) + 1,
-          last_used:      now,
-          ...(key.mutated ? { status: 'healthy' } : {}),
-        }),
-        recordModelUsage(
-          userId,
-          key.id,
-          modelName, // We record usage under the clean canonical modelName
-          key.model_rpd + 1,
-          key.model_rpm + 1,
-          todayStr,
-          now
-        ),
-      ]);
-
-      return NextResponse.json(data, { status: 200 });
+      return new NextResponse(response.body, {
+        status: response.status,
+        headers: responseHeaders,
+      });
 
     } catch (err: any) {
       await updateKeyState(key.id, {
@@ -170,9 +209,12 @@ export async function POST(req: Request, { params }: { params: Promise<{ path: s
 
   return NextResponse.json(
     { error: 'All available keys failed to process the request.' },
-    { status: 502 }
+    { status: 502, headers: { 'Access-Control-Allow-Origin': '*' } }
   );
 }
+
+// Map the master handler to all HTTP methods used by the GenAI SDK
+export { handler as GET, handler as POST, handler as OPTIONS, handler as PUT, handler as PATCH, handler as DELETE };
 
 // ─── Database Helpers ─────────────────────────────────────────────────────────
 
