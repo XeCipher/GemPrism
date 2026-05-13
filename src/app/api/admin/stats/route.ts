@@ -7,14 +7,13 @@ export const runtime = 'edge';
 const kv = Redis.fromEnv();
 
 export async function GET(req: Request) {
-  const authHeader = req.headers.get('authorization') || req.headers.get('X-Gateway-Token');
-  if (authHeader !== process.env.GATEWAY_SECRET && authHeader !== `Bearer ${process.env.GATEWAY_SECRET}`) {
+  const authHeader = req.headers.get('authorization') || req.headers.get('x-goog-api-key');
+  if (authHeader !== process.env.GEMPRISM_SECRET && authHeader !== `Bearer ${process.env.GEMPRISM_SECRET}`) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
   const keys = await getHydratedKeys();
   const safeKeys = keys.map(({ key, ...safe }) => safe);
-  
   const modelUsage = await kv.hgetall('prism:model_usage') || {};
 
   return NextResponse.json({

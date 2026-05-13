@@ -7,8 +7,10 @@ export const runtime = 'edge';
 const kv = Redis.fromEnv();
 
 export async function POST(req: Request, { params }: { params: Promise<{ path: string[] }> }) {
-  if (req.headers.get('X-Gateway-Token') !== process.env.GATEWAY_SECRET) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  const incomingKey = req.headers.get('x-goog-api-key');
+  
+  if (incomingKey !== process.env.GEMPRISM_SECRET) {
+    return NextResponse.json({ error: 'Unauthorized: Invalid GemPrism Token' }, { status: 401 });
   }
 
   const resolvedParams = await params;
@@ -48,7 +50,9 @@ export async function POST(req: Request, { params }: { params: Promise<{ path: s
       
       const response = await fetch(targetUrl, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+        },
         body: payload
       });
 
@@ -77,7 +81,6 @@ export async function POST(req: Request, { params }: { params: Promise<{ path: s
       node.last_used = Date.now();
       
       await kv.hincrby('prism:model_usage', modelName, 1);
-      
       await updateKeyState(node);
 
       return NextResponse.json(data, { status: 200 });
