@@ -50,9 +50,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ path: s
       
       const response = await fetch(targetUrl, {
         method: 'POST',
-        headers: { 
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: payload
       });
 
@@ -65,14 +63,20 @@ export async function POST(req: Request, { params }: { params: Promise<{ path: s
         continue;
       }
 
-      if (response.status === 403 || response.status === 400) {
+      if (response.status === 403) {
         node.status = 'dead';
         node.total_errors++;
-        node.last_error = `API Error ${response.status}`;
+        node.last_error = `API Key Invalid (403)`;
         await updateKeyState(node);
         continue;
       }
 
+      if (!response.ok) {
+        const errorData = await response.json();
+        return NextResponse.json(errorData, { status: response.status });
+      }
+
+      // 4. Success! Update limits.
       const data = await response.json();
       
       node.rpd_count++;
