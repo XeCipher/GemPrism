@@ -1,42 +1,48 @@
-<svg 
-    width={size} 
-    height={size} 
-    className={className} 
-    viewBox="0 0 100 100" 
-    xmlns="http://www.w3.org/2000/svg"
->
+<svg width="100" height="100" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
     <defs>
-    <filter id="glow">
-        <feGaussianBlur in="SourceGraphic" stdDeviation="1.4" result="blur" />
-        <feMerge>
-        <feMergeNode in="blur" />
-        <feMergeNode in="SourceGraphic" />
-        </feMerge>
-    </filter>
-    <linearGradient id="prismGrad" x1="0" y1="0" x2="1" y2="0">
-        <stop offset="0%" stopColor="#10b981" stopOpacity="0.05" />
-        <stop offset="100%" stopColor="#10b981" stopOpacity="0.18" />
-    </linearGradient>
+        <!-- A more accurate glow effect that matches your image -->
+        <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+            <feGaussianBlur in="SourceGraphic" stdDeviation="2" result="blur" />
+            <feMerge>
+                <feMergeNode in="blur" />
+                <feMergeNode in="SourceGraphic" />
+            </feMerge>
+        </filter>
+
+        <!-- Gradient for the prism's body, from dark green to a darker tone -->
+        <linearGradient id="prismFillGrad" x1="0.5" y1="0" x2="0.5" y2="1">
+            <stop offset="0%" stop-color="#10b981" stop-opacity="0.5" />
+            <stop offset="100%" stop-color="#032D21" stop-opacity="0.8" />
+        </linearGradient>
+
+        <!-- The TRUE gradient for the outgoing light rays (green to cyan) -->
+        <linearGradient id="lineStrokeGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+            <stop offset="0%" stop-color="#6ee7b7" />
+            <stop offset="100%" stop-color="#06b6d4" />
+        </linearGradient>
     </defs>
 
-    {/* The dark background <rect> element has been removed */}
-
+    <!-- 1. The incoming white line -->
     <line 
-    x1="6" y1="50" x2="22" y2="50"
-    stroke="white" strokeWidth="2.4" strokeLinecap="round" opacity="0.7" 
+        x1="6" y1="50" x2="22" y2="50"
+        stroke="white" stroke-width="2.5" stroke-linecap="round"
     />
 
+    <!-- 2. The prism with a brighter outline and new gradient fill -->
     <polygon 
-    points="22,50 73,16 73,84"
-    fill="url(#prismGrad)"
-    stroke="#10b981" strokeWidth="1.5" strokeLinejoin="round" 
+        points="22,50 73,16 73,84"
+        fill="url(#prismFillGrad)"
+        stroke="#6ee7b7" stroke-width="2" stroke-linejoin="round"
     />
 
-    <line x1="73" y1="24" x2="94" y2="7" stroke="#a7f3d0" strokeWidth="1.6" strokeLinecap="round" opacity="0.42" />
-    <line x1="73" y1="33" x2="94" y2="21" stroke="#6ee7b7" strokeWidth="1.8" strokeLinecap="round" opacity="0.62" />
-    <line x1="73" y1="41" x2="94" y2="37" stroke="#34d399" strokeWidth="2.0" strokeLinecap="round" opacity="0.82" />
-    <line x1="73" y1="50" x2="94" y2="53" stroke="#10b981" strokeWidth="2.4" strokeLinecap="round" opacity="1" filter="url(#glow)" />
-    <line x1="73" y1="58" x2="94" y2="68" stroke="#06b6d4" strokeWidth="2.0" strokeLinecap="round" opacity="0.80" />
-    <line x1="73" y1="67" x2="94" y2="82" stroke="#0891b2" strokeWidth="1.8" strokeLinecap="round" opacity="0.58" />
-    <line x1="73" y1="76" x2="94" y2="96" stroke="#0369a1" strokeWidth="1.5" strokeLinecap="round" opacity="0.35" />
+    <!-- 3. The outgoing lines, now all using the correct gradient stroke -->
+    <g filter="url(#glow)">
+        <line x1="73" y1="24" x2="94" y2="7"  stroke="url(#lineStrokeGrad)" stroke-width="1.6" stroke-linecap="round" />
+        <line x1="73" y1="33" x2="94" y2="21" stroke="url(#lineStrokeGrad)" stroke-width="1.8" stroke-linecap="round" />
+        <line x1="73" y1="41" x2="94" y2="37" stroke="url(#lineStrokeGrad)" stroke-width="2.0" stroke-linecap="round" />
+        <line x1="73" y1="50" x2="94" y2="53" stroke="url(#lineStrokeGrad)" stroke-width="2.4" stroke-linecap="round" />
+        <line x1="73" y1="58" x2="94" y2="68" stroke="url(#lineStrokeGrad)" stroke-width="2.0" stroke-linecap="round" />
+        <line x1="73" y1="67" x2="94" y2="82" stroke="url(#lineStrokeGrad)" stroke-width="1.8" stroke-linecap="round" />
+        <line x1="73" y1="76" x2="94" y2="96" stroke="url(#lineStrokeGrad)" stroke-width="1.6" stroke-linecap="round" />
+    </g>
 </svg>
