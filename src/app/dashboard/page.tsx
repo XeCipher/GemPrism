@@ -5,12 +5,13 @@ import { supabaseClient } from "@/lib/supabase";
 import {
   Activity, ShieldAlert, Zap, ServerCrash, Copy, Check,
   Database, Plus, LogOut, Trash2, RefreshCw, AlertCircle,
-  ChevronUp, Layers, KeyRound
+  ChevronUp, Layers, KeyRound, TrendingUp,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 
-/* ─── Toast ─── */
+// ─── Toast ───────────────────────────────────────────────────────────────────
+
 type ToastType = "success" | "error" | "info";
 interface Toast { id: string; message: string; type: ToastType }
 
@@ -42,27 +43,32 @@ function ToastList({ toasts, remove }: { toasts: Toast[]; remove: (id: string) =
   );
 }
 
-/* ─── Skeleton Card ─── */
+// ─── Skeleton ────────────────────────────────────────────────────────────────
+
 function Skeleton({ className = "" }: { className?: string }) {
   return <div className={`rounded bg-neutral-800/60 animate-pulse ${className}`} />;
 }
 
-/* ─── Progress Bar ─── */
+// ─── Progress Bar ─────────────────────────────────────────────────────────────
+// Note: when max === 999999 (unlimited), the bar intentionally renders empty
+// with an ∞ cap. A full bar for unlimited is misleading.
+
 function UsageBar({ value, max, label }: { value: number; max: number; label: string }) {
-  const isUnlimited = max === 999999;
+  const isUnlimited  = max === 999_999;
   const isWaitlisted = max === 0;
-  
-  let pct = 0;
+
+  let pct   = 0;
   let color = "bg-emerald-500";
 
   if (isWaitlisted) {
-    pct = 0;
+    pct   = 0;
     color = "bg-red-500/50";
   } else if (isUnlimited) {
-    pct = 100;
+    // Keep the bar visually empty — a full bar implies exhaustion, not freedom
+    pct   = 0;
     color = "bg-cyan-500";
   } else {
-    pct = Math.min(100, Math.round((value / max) * 100));
+    pct   = Math.min(100, Math.round((value / max) * 100));
     color = pct >= 90 ? "bg-red-500" : pct >= 60 ? "bg-amber-400" : "bg-emerald-500";
   }
 
@@ -73,9 +79,13 @@ function UsageBar({ value, max, label }: { value: number; max: number; label: st
       <div className="flex justify-between text-xs mb-1.5 font-medium">
         <span className="text-neutral-500">{label}</span>
         <span className="text-neutral-300">
-          <span className={pct > 0 && !isWaitlisted ? "text-emerald-400" : ""}>{value.toLocaleString()}</span>
+          <span className={pct > 0 && !isWaitlisted ? "text-emerald-400" : ""}>
+            {value.toLocaleString()}
+          </span>
           <span className="text-neutral-600 mx-0.5">/</span>
-          {displayMax}
+          {isUnlimited
+            ? <span className="text-cyan-400">{displayMax}</span>
+            : displayMax}
         </span>
       </div>
       <div className="h-1.5 bg-neutral-900 border border-neutral-800 rounded-full overflow-hidden">
@@ -88,14 +98,16 @@ function UsageBar({ value, max, label }: { value: number; max: number; label: st
   );
 }
 
-/* ─── Status Badge ─── */
+// ─── Status Badge ─────────────────────────────────────────────────────────────
+
 function StatusBadge({ status }: { status: string }) {
   const map: Record<string, { cls: string; dot: string }> = {
     healthy: { cls: "bg-emerald-500/10 text-emerald-400 border-emerald-500/20", dot: "bg-emerald-500" },
-    cooling: { cls: "bg-amber-500/10  text-amber-400  border-amber-500/20",  dot: "bg-amber-400" },
-    dead:    { cls: "bg-red-500/10    text-red-400    border-red-500/20",    dot: "bg-red-500" },
+    cooling: { cls: "bg-amber-500/10  text-amber-400  border-amber-500/20",     dot: "bg-amber-400"  },
+    dead:    { cls: "bg-red-500/10    text-red-400    border-red-500/20",        dot: "bg-red-500"    },
   };
   const s = map[status] ?? map.dead;
+
   return (
     <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-[11px] sm:text-xs font-semibold tracking-wide uppercase ${s.cls}`}>
       <span className={`w-1.5 h-1.5 rounded-full ${s.dot} ${status === "healthy" ? "animate-pulse" : ""}`} />
@@ -104,49 +116,74 @@ function StatusBadge({ status }: { status: string }) {
   );
 }
 
-/* ─── Main Component ─── */
+// ─── Inline Usage Stat (for the keys table) ───────────────────────────────────
+// Simple number display — no bar, no limit comparison, just the raw count.
+
+function UsageStat({ label, value, accent = "text-emerald-400" }: { label: string; value: number; accent?: string }) {
+  return (
+    <div className="flex flex-col items-center gap-0.5">
+      <span className={`font-[family-name:var(--font-mono)] font-semibold text-sm tabular-nums ${accent}`}>
+        {value.toLocaleString()}
+      </span>
+      <span className="text-[10px] text-neutral-600 uppercase tracking-wider font-medium">{label}</span>
+    </div>
+  );
+}
+
+// ─── Main Component ───────────────────────────────────────────────────────────
+
 export default function Dashboard() {
   const router = useRouter();
-  const [data,           setData          ] = useState<any>(null);
-  const [session,        setSession       ] = useState<any>(null);
-  const [copiedId,       setCopiedId      ] = useState<string | null>(null);
-  const [newKeyName,     setNewKeyName    ] = useState("");
-  const [newKeyValue,    setNewKeyValue   ] = useState("");
-  const [isAdding,       setIsAdding      ] = useState(false);
-  const [confirmDelete,  setConfirmDelete ] = useState<string | null>(null);
-  const [deletingId,     setDeletingId    ] = useState<string | null>(null);
-  const [refreshing,     setRefreshing    ] = useState(false);
-  const [toasts,         setToasts        ] = useState<Toast[]>([]);
-  const [activeKeyId,    setActiveKeyId   ] = useState<string>("");
 
-  /* ── Toast helpers ── */
+  const [data,          setData         ] = useState<any>(null);
+  const [session,       setSession      ] = useState<any>(null);
+  const [copiedId,      setCopiedId     ] = useState<string | null>(null);
+  const [newKeyName,    setNewKeyName   ] = useState("");
+  const [newKeyValue,   setNewKeyValue  ] = useState("");
+  const [isAdding,      setIsAdding     ] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const [deletingId,    setDeletingId   ] = useState<string | null>(null);
+  const [refreshing,    setRefreshing   ] = useState(false);
+  const [toasts,        setToasts       ] = useState<Toast[]>([]);
+  const [activeKeyId,   setActiveKeyId  ] = useState<string>("");
+
+  // ── Toast helpers ──────────────────────────────────────────────────────────
+
   const addToast = useCallback((message: string, type: ToastType = "info") => {
     const id = Math.random().toString(36).slice(2);
     setToasts(prev => [...prev, { id, message, type }]);
     setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 3500);
-  },[]);
+  }, []);
 
-  const removeToast = useCallback((id: string) => setToasts(prev => prev.filter(t => t.id !== id)),[]);
+  const removeToast = useCallback((id: string) =>
+    setToasts(prev => prev.filter(t => t.id !== id)), []);
 
-  /* ── Generate Default Key Name safely on client ── */
+  // ── Generate a random default key name on mount (avoids SSR mismatch) ─────
+
   useEffect(() => {
     setNewKeyName(`Key-${Math.random().toString(36).slice(2, 6).toUpperCase()}`);
-  },[]);
+  }, []);
 
-  /* ── Fetch stats ── */
+  // ── Fetch dashboard stats ──────────────────────────────────────────────────
+
   const fetchStats = useCallback(async (sess: any, quiet = false) => {
     if (!sess) return;
     if (!quiet) setRefreshing(true);
+
     try {
       const res = await fetch("/api/admin/stats", {
         headers: { Authorization: `Bearer ${sess.access_token}` },
       });
+
       if (res.ok) {
         const json = await res.json();
         setData(json);
-        // Automatically select the first API key for the models view if none is selected
+
+        // Auto-select the first key for the model telemetry view if none is chosen
         if (json.keys?.length > 0) {
-          setActiveKeyId(prev => (prev && json.keys.some((k: any) => k.id === prev)) ? prev : json.keys[0].id);
+          setActiveKeyId(prev =>
+            prev && json.keys.some((k: any) => k.id === prev) ? prev : json.keys[0].id
+          );
         } else {
           setActiveKeyId("");
         }
@@ -161,7 +198,8 @@ export default function Dashboard() {
     }
   }, [router, addToast]);
 
-  /* ── Auth init ── */
+  // ── Auth init ──────────────────────────────────────────────────────────────
+
   useEffect(() => {
     supabaseClient.auth.getSession().then(({ data: { session } }) => {
       if (!session) { router.push("/login"); return; }
@@ -169,7 +207,8 @@ export default function Dashboard() {
     });
   }, [router]);
 
-  /* ── Auto-refresh ── */
+  // ── Auto-refresh every 6 seconds ──────────────────────────────────────────
+
   useEffect(() => {
     if (!session) return;
     fetchStats(session);
@@ -177,17 +216,16 @@ export default function Dashboard() {
     return () => clearInterval(id);
   }, [session, fetchStats]);
 
-  /* ── Add key ── */
+  // ── Add key ────────────────────────────────────────────────────────────────
+
   const handleAddKey = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newKeyValue.trim() || !newKeyName.trim()) return;
     setIsAdding(true);
 
-    const finalName = newKeyName.trim();
-
     const { error } = await supabaseClient.from("api_keys").insert({
-      user_id: session.user.id,
-      name: finalName,
+      user_id:   session.user.id,
+      name:      newKeyName.trim(),
       key_value: newKeyValue.trim(),
     });
 
@@ -202,15 +240,19 @@ export default function Dashboard() {
     setIsAdding(false);
   };
 
-  /* ── Delete key ── */
+  // ── Delete key ─────────────────────────────────────────────────────────────
+
   const handleDeleteKey = async (keyId: string) => {
+    // First click: ask for confirmation. Second click within 3s: delete.
     if (confirmDelete !== keyId) {
       setConfirmDelete(keyId);
       setTimeout(() => setConfirmDelete(id => (id === keyId ? null : id)), 3000);
       return;
     }
+
     setDeletingId(keyId);
     setConfirmDelete(null);
+
     const { error } = await supabaseClient.from("api_keys").delete().eq("id", keyId);
     if (error) {
       addToast("Failed to remove API key", "error");
@@ -221,7 +263,8 @@ export default function Dashboard() {
     setDeletingId(null);
   };
 
-  /* ── Copy helper ── */
+  // ── Copy to clipboard ──────────────────────────────────────────────────────
+
   const handleCopy = (text: string) => {
     navigator.clipboard.writeText(text).catch(() => {});
     setCopiedId(text);
@@ -229,13 +272,15 @@ export default function Dashboard() {
     setTimeout(() => setCopiedId(null), 2000);
   };
 
-  /* ── Sign out ── */
+  // ── Sign out ───────────────────────────────────────────────────────────────
+
   const handleSignOut = async () => {
     await supabaseClient.auth.signOut();
     router.push("/login");
   };
 
-  /* ── Loading skeleton ── */
+  // ── Loading skeleton ───────────────────────────────────────────────────────
+
   if (!data) {
     return (
       <div className="min-h-screen bg-[#030303] text-neutral-300 p-4 md:p-8 max-w-7xl mx-auto">
@@ -248,7 +293,9 @@ export default function Dashboard() {
         </div>
         <Skeleton className="w-full h-24 rounded-2xl mb-8" />
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
-          {Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-28 rounded-xl" />)}
+          {Array.from({ length: 4 }).map((_, i) => (
+            <Skeleton key={i} className="h-28 rounded-xl" />
+          ))}
         </div>
         <Skeleton className="w-full h-12 rounded-xl mb-10" />
         <Skeleton className="w-full h-64 rounded-xl mb-10" />
@@ -256,31 +303,59 @@ export default function Dashboard() {
     );
   }
 
-  const STATS =[
+  // ── Derived data ───────────────────────────────────────────────────────────
+
+  const STATS = [
     { label: "Total Requests", value: data.summary.total_requests, icon: Activity,    color: "text-emerald-400" },
     { label: "Active Keys",    value: data.summary.active,         icon: Zap,         color: "text-emerald-400" },
     { label: "Cooling Keys",   value: data.summary.cooling,        icon: ShieldAlert, color: "text-amber-400"   },
     { label: "Dead Keys",      value: data.summary.dead,           icon: ServerCrash, color: "text-red-400"     },
   ];
 
-  // Helper to get usage for the currently selected key
+  /**
+   * Returns the hydrated RPD and RPM for a given key+model combo.
+   * Mirrors the server-side reset logic: stale dates → 0, expired minute windows → 0.
+   * Used in the model telemetry table.
+   */
   const getUsageForActiveKey = (modelName: string) => {
     if (!activeKeyId) return { rpm: 0, rpd: 0 };
-    
-    // Hydrate local variables to mirror the server's time-window logic
-    const now = Date.now();
+
+    const now      = Date.now();
     const todayStr = new Date().toISOString().split('T')[0];
 
-    const record = data.usage.find((u: any) => u.api_key_id === activeKeyId && u.model_name === modelName);
+    const record = data.usage.find(
+      (u: any) => u.api_key_id === activeKeyId && u.model_name === modelName
+    );
     if (!record) return { rpm: 0, rpd: 0 };
 
-    let rpd = record.rpd_count;
-    let rpm = record.rpm_count;
-    if (record.rpd_date !== todayStr) rpd = 0;
-    if (now - record.rpm_window_start > 60000) rpm = 0;
+    const rpd = record.rpd_date === todayStr ? (record.rpd_count || 0) : 0;
+    const rpm = (now - (record.rpm_window_start || 0)) <= 60_000 ? (record.rpm_count || 0) : 0;
 
     return { rpm, rpd };
   };
+
+  /**
+   * Returns the total RPD (today) and RPM (last 60s) for a given api_key,
+   * summed across all models that key was used for.
+   * Shown in the API keys pool table as plain numbers — no limit comparison.
+   */
+  const getKeyTotals = (keyId: string): { rpd: number; rpm: number } => {
+    const now      = Date.now();
+    const todayStr = new Date().toISOString().split('T')[0];
+
+    const keyUsages = (data.usage || []).filter((u: any) => u.api_key_id === keyId);
+
+    return keyUsages.reduce(
+      (acc: { rpd: number; rpm: number }, u: any) => {
+        const rpd = u.rpd_date === todayStr ? (u.rpd_count || 0) : 0;
+        const rpm = (now - (u.rpm_window_start || 0)) <= 60_000 ? (u.rpm_count || 0) : 0;
+        return { rpd: acc.rpd + rpd, rpm: acc.rpm + rpm };
+      },
+      { rpd: 0, rpm: 0 }
+    );
+  };
+
+  // ── Render ─────────────────────────────────────────────────────────────────
 
   return (
     <div className="min-h-screen bg-[#030303] bg-dots text-neutral-300 p-4 md:p-8 max-w-7xl mx-auto selection:bg-emerald-500/25">
@@ -343,10 +418,15 @@ export default function Dashboard() {
         {STATS.map(({ label, value, icon: Icon, color }) => (
           <div key={label} className="bg-[#0a0a0a] border border-neutral-800 rounded-xl p-4 sm:p-5 flex flex-col gap-3 shadow-lg">
             <div className="flex items-center justify-between">
-              <span className="text-neutral-500 text-[11px] sm:text-xs font-medium uppercase tracking-wider">{label}</span>
+              <span className="text-neutral-500 text-[11px] sm:text-xs font-medium uppercase tracking-wider">
+                {label}
+              </span>
               <Icon size={16} className={color} />
             </div>
-            <div className="text-2xl sm:text-3xl font-semibold text-white" style={{ fontFamily: "var(--font-mono)" }}>
+            <div
+              className="text-2xl sm:text-3xl font-semibold text-white"
+              style={{ fontFamily: "var(--font-mono)" }}
+            >
               {value}
             </div>
           </div>
@@ -354,7 +434,10 @@ export default function Dashboard() {
       </div>
 
       {/* ── Add Key Form ── */}
-      <form onSubmit={handleAddKey} className="flex flex-col sm:flex-row gap-2.5 mb-12 bg-[#0a0a0a] p-3 sm:p-4 rounded-2xl border border-neutral-800">
+      <form
+        onSubmit={handleAddKey}
+        className="flex flex-col sm:flex-row gap-2.5 mb-12 bg-[#0a0a0a] p-3 sm:p-4 rounded-2xl border border-neutral-800"
+      >
         <input
           type="text"
           placeholder="Key Name"
@@ -381,13 +464,15 @@ export default function Dashboard() {
         </button>
       </form>
 
-      {/* ── API Keys List ── */}
+      {/* ── API Keys Pool ── */}
       <div className="mb-12">
         <div className="flex items-center justify-between mb-4 px-1">
           <h2 className="text-lg font-semibold text-white flex items-center gap-2">
             <KeyRound size={18} className="text-neutral-500" />
             API Keys Pool
-            <span className="text-neutral-600 font-normal text-sm bg-neutral-900 px-2 py-0.5 rounded-full">{data.keys.length}</span>
+            <span className="text-neutral-600 font-normal text-sm bg-neutral-900 px-2 py-0.5 rounded-full">
+              {data.keys.length}
+            </span>
           </h2>
         </div>
 
@@ -395,106 +480,186 @@ export default function Dashboard() {
           <div className="bg-[#0a0a0a] border border-neutral-800 rounded-2xl flex flex-col items-center justify-center py-16 gap-3 text-neutral-600 shadow-xl">
             <KeyRound size={36} className="opacity-30 mb-2" />
             <p className="text-sm font-medium text-neutral-400">No keys added yet.</p>
-            <p className="text-xs text-neutral-500 max-w-xs text-center">Paste a Gemini API key above to start load-balancing requests.</p>
+            <p className="text-xs text-neutral-500 max-w-xs text-center">
+              Paste a Gemini API key above to start load-balancing requests.
+            </p>
           </div>
         ) : (
           <>
-            {/* Desktop Table View */}
+            {/* Desktop Table */}
             <div className="hidden md:block bg-[#0a0a0a] border border-neutral-800 rounded-2xl overflow-hidden shadow-xl">
               <table className="w-full text-left text-sm">
                 <thead>
                   <tr className="bg-[#0d0d0d] border-b border-neutral-800 text-neutral-500 text-xs uppercase tracking-wider font-semibold">
                     <th className="px-5 py-4 font-normal">Name & Key</th>
                     <th className="px-5 py-4 font-normal">Status</th>
-                    <th className="px-5 py-4 font-normal text-right">Total Usage</th>
+                    {/* RPD = total requests today across all models for this key
+                        RPM = requests in the last 60 seconds                */}
+                    <th className="px-5 py-4 font-normal text-center">RPD today</th>
+                    <th className="px-5 py-4 font-normal text-center">RPM now</th>
+                    <th className="px-5 py-4 font-normal text-right">All-time</th>
                     <th className="px-5 py-4 font-normal text-right">Errors</th>
                     <th className="px-5 py-4 font-normal text-center">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-neutral-800/60">
-                  {data.keys.map((k: any) => (
-                    <tr key={k.id} className="hover:bg-[#0d0d0d] transition-colors">
-                      <td className="px-5 py-4">
-                        <div className="font-medium text-white mb-1">{k.name}</div>
-                        <code className="text-neutral-500 text-xs font-[family-name:var(--font-mono)]">{k.key_value}</code>
-                      </td>
-                      <td className="px-5 py-4"><StatusBadge status={k.status} /></td>
-                      <td className="px-5 py-4 text-right">
-                        <span className="text-emerald-400 font-[family-name:var(--font-mono)] font-semibold text-sm">
-                          {k.total_requests?.toLocaleString() || 0}
-                        </span>
-                        <span className="text-neutral-600 text-xs ml-1.5 block">requests</span>
-                      </td>
-                      <td className="px-5 py-4 text-right">
-                        {k.total_errors > 0 ? (
-                          <span className="text-red-400 text-xs font-medium cursor-help border-b border-dashed border-red-400/30 pb-0.5" title={k.last_error ?? "Unknown error"}>
-                            {k.total_errors} {k.total_errors === 1 ? "error" : "errors"}
+                  {data.keys.map((k: any) => {
+                    const totals = getKeyTotals(k.id);
+                    return (
+                      <tr key={k.id} className="hover:bg-[#0d0d0d] transition-colors">
+                        <td className="px-5 py-4">
+                          <div className="font-medium text-white mb-1">{k.name}</div>
+                          <code className="text-neutral-500 text-xs font-[family-name:var(--font-mono)]">
+                            {k.key_value}
+                          </code>
+                        </td>
+
+                        <td className="px-5 py-4">
+                          <StatusBadge status={k.status} />
+                        </td>
+
+                        {/* Requests today (resets at midnight UTC) */}
+                        <td className="px-5 py-4 text-center">
+                          <span className={`font-[family-name:var(--font-mono)] font-semibold text-sm tabular-nums ${totals.rpd > 0 ? "text-emerald-400" : "text-neutral-600"}`}>
+                            {totals.rpd.toLocaleString()}
                           </span>
-                        ) : <span className="text-neutral-700 text-xs">—</span>}
-                      </td>
-                      <td className="px-5 py-4">
-                        <button
-                          onClick={() => handleDeleteKey(k.id)}
-                          disabled={deletingId === k.id}
-                          className={`text-xs flex items-center justify-center gap-1.5 mx-auto px-3 py-2 rounded-lg transition-all font-medium disabled:opacity-40 w-[100px] ${
-                            confirmDelete === k.id ? "bg-red-500/15 border border-red-500/30 text-red-400 animate-glow" : "bg-neutral-900 hover:bg-red-500/10 text-neutral-400 hover:text-red-400 border border-neutral-800 hover:border-red-500/30"
-                          }`}
-                        >
-                          {deletingId === k.id ? <span className="w-3.5 h-3.5 rounded-full border border-neutral-600 border-t-white animate-spin" /> : <Trash2 size={14} />}
-                          {confirmDelete === k.id ? "Confirm" : "Remove"}
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
+                        </td>
+
+                        {/* Requests in the last 60 seconds */}
+                        <td className="px-5 py-4 text-center">
+                          <span className={`font-[family-name:var(--font-mono)] font-semibold text-sm tabular-nums ${totals.rpm > 0 ? "text-cyan-400" : "text-neutral-600"}`}>
+                            {totals.rpm.toLocaleString()}
+                          </span>
+                        </td>
+
+                        {/* All-time total requests */}
+                        <td className="px-5 py-4 text-right">
+                          <span className="text-neutral-300 font-[family-name:var(--font-mono)] font-semibold text-sm">
+                            {(k.total_requests || 0).toLocaleString()}
+                          </span>
+                          <span className="text-neutral-600 text-xs ml-1.5 block">requests</span>
+                        </td>
+
+                        <td className="px-5 py-4 text-right">
+                          {k.total_errors > 0 ? (
+                            <span
+                              className="text-red-400 text-xs font-medium cursor-help border-b border-dashed border-red-400/30 pb-0.5"
+                              title={k.last_error ?? "Unknown error"}
+                            >
+                              {k.total_errors} {k.total_errors === 1 ? "error" : "errors"}
+                            </span>
+                          ) : (
+                            <span className="text-neutral-700 text-xs">—</span>
+                          )}
+                        </td>
+
+                        <td className="px-5 py-4">
+                          <button
+                            onClick={() => handleDeleteKey(k.id)}
+                            disabled={deletingId === k.id}
+                            className={`text-xs flex items-center justify-center gap-1.5 mx-auto px-3 py-2 rounded-lg transition-all font-medium disabled:opacity-40 w-[100px] ${
+                              confirmDelete === k.id
+                                ? "bg-red-500/15 border border-red-500/30 text-red-400 animate-glow"
+                                : "bg-neutral-900 hover:bg-red-500/10 text-neutral-400 hover:text-red-400 border border-neutral-800 hover:border-red-500/30"
+                            }`}
+                          >
+                            {deletingId === k.id
+                              ? <span className="w-3.5 h-3.5 rounded-full border border-neutral-600 border-t-white animate-spin" />
+                              : <Trash2 size={14} />}
+                            {confirmDelete === k.id ? "Confirm" : "Remove"}
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
 
             {/* Mobile Card View */}
             <div className="md:hidden flex flex-col gap-3">
-              {data.keys.map((k: any) => (
-                <div key={k.id} className="bg-[#0a0a0a] border border-neutral-800 rounded-xl p-4 flex flex-col gap-4">
-                  <div className="flex justify-between items-start">
-                    <div>
-                      <div className="font-semibold text-white mb-0.5 text-base">{k.name}</div>
-                      <code className="text-neutral-500 text-[11px] font-[family-name:var(--font-mono)]">{k.key_value}</code>
-                    </div>
-                    <StatusBadge status={k.status} />
-                  </div>
-                  
-                  <div className="grid grid-cols-2 gap-3 bg-[#0d0d0d] p-3 rounded-lg border border-neutral-800/50">
-                    <div>
-                      <div className="text-[10px] text-neutral-500 uppercase tracking-widest font-semibold mb-1">Total Usage</div>
-                      <div className="text-emerald-400 font-[family-name:var(--font-mono)] font-semibold text-sm">
-                        {k.total_requests?.toLocaleString() || 0} reqs
+              {data.keys.map((k: any) => {
+                const totals = getKeyTotals(k.id);
+                return (
+                  <div key={k.id} className="bg-[#0a0a0a] border border-neutral-800 rounded-xl p-4 flex flex-col gap-4">
+                    <div className="flex justify-between items-start">
+                      <div>
+                        <div className="font-semibold text-white mb-0.5 text-base">{k.name}</div>
+                        <code className="text-neutral-500 text-[11px] font-[family-name:var(--font-mono)]">
+                          {k.key_value}
+                        </code>
                       </div>
+                      <StatusBadge status={k.status} />
                     </div>
-                    <div>
-                      <div className="text-[10px] text-neutral-500 uppercase tracking-widest font-semibold mb-1">Errors</div>
-                      <div className="text-sm font-medium">
-                        {k.total_errors > 0 ? <span className="text-red-400">{k.total_errors} errors</span> : <span className="text-neutral-600">—</span>}
-                      </div>
-                    </div>
-                  </div>
 
-                  <button
-                    onClick={() => handleDeleteKey(k.id)}
-                    disabled={deletingId === k.id}
-                    className={`text-xs flex items-center justify-center gap-1.5 w-full py-2.5 rounded-lg transition-all font-medium disabled:opacity-40 ${
-                      confirmDelete === k.id ? "bg-red-500/15 border border-red-500/30 text-red-400" : "bg-neutral-900/50 hover:bg-red-500/10 text-neutral-400 hover:text-red-400 border border-neutral-800 hover:border-red-500/30"
-                    }`}
-                  >
-                    {deletingId === k.id ? <span className="w-3.5 h-3.5 rounded-full border border-neutral-600 border-t-white animate-spin" /> : <Trash2 size={14} />}
-                    {confirmDelete === k.id ? "Confirm Removal" : "Remove API Key"}
-                  </button>
-                </div>
-              ))}
+                    {/* Four-cell stats grid: RPD, RPM, All-time, Errors */}
+                    <div className="grid grid-cols-4 gap-2 bg-[#0d0d0d] p-3 rounded-lg border border-neutral-800/50">
+                      <div className="flex flex-col items-center gap-0.5">
+                        <span className={`font-[family-name:var(--font-mono)] font-semibold text-sm tabular-nums ${totals.rpd > 0 ? "text-emerald-400" : "text-neutral-600"}`}>
+                          {totals.rpd.toLocaleString()}
+                        </span>
+                        <span className="text-[9px] text-neutral-600 uppercase tracking-wider font-medium">
+                          RPD
+                        </span>
+                      </div>
+
+                      <div className="flex flex-col items-center gap-0.5">
+                        <span className={`font-[family-name:var(--font-mono)] font-semibold text-sm tabular-nums ${totals.rpm > 0 ? "text-cyan-400" : "text-neutral-600"}`}>
+                          {totals.rpm.toLocaleString()}
+                        </span>
+                        <span className="text-[9px] text-neutral-600 uppercase tracking-wider font-medium">
+                          RPM
+                        </span>
+                      </div>
+
+                      <div className="flex flex-col items-center gap-0.5">
+                        <span className="font-[family-name:var(--font-mono)] font-semibold text-sm text-neutral-300 tabular-nums">
+                          {(k.total_requests || 0).toLocaleString()}
+                        </span>
+                        <span className="text-[9px] text-neutral-600 uppercase tracking-wider font-medium">
+                          Total
+                        </span>
+                      </div>
+
+                      <div className="flex flex-col items-center gap-0.5">
+                        <span className={`font-[family-name:var(--font-mono)] font-semibold text-sm tabular-nums ${k.total_errors > 0 ? "text-red-400" : "text-neutral-600"}`}>
+                          {(k.total_errors || 0).toLocaleString()}
+                        </span>
+                        <span className="text-[9px] text-neutral-600 uppercase tracking-wider font-medium">
+                          Errors
+                        </span>
+                      </div>
+                    </div>
+
+                    {k.last_error && k.total_errors > 0 && (
+                      <p className="text-[11px] text-red-400/70 bg-red-500/5 border border-red-500/15 rounded-lg px-3 py-2 leading-relaxed">
+                        Last error: {k.last_error}
+                      </p>
+                    )}
+
+                    <button
+                      onClick={() => handleDeleteKey(k.id)}
+                      disabled={deletingId === k.id}
+                      className={`text-xs flex items-center justify-center gap-1.5 w-full py-2.5 rounded-lg transition-all font-medium disabled:opacity-40 ${
+                        confirmDelete === k.id
+                          ? "bg-red-500/15 border border-red-500/30 text-red-400"
+                          : "bg-neutral-900/50 hover:bg-red-500/10 text-neutral-400 hover:text-red-400 border border-neutral-800 hover:border-red-500/30"
+                      }`}
+                    >
+                      {deletingId === k.id
+                        ? <span className="w-3.5 h-3.5 rounded-full border border-neutral-600 border-t-white animate-spin" />
+                        : <Trash2 size={14} />}
+                      {confirmDelete === k.id ? "Confirm Removal" : "Remove API Key"}
+                    </button>
+                  </div>
+                );
+              })}
             </div>
           </>
         )}
       </div>
 
-      {/* ── Model Telemetry Section ── */}
+      {/* ── Model Telemetry ── */}
       <div className="mb-10">
         <div className="flex flex-col md:flex-row md:items-end justify-between gap-4 mb-5 px-1">
           <div>
@@ -502,12 +667,16 @@ export default function Dashboard() {
               <Database size={18} className="text-neutral-500" />
               Model Registry & Exact Limits
             </h2>
-            <p className="text-xs text-neutral-500">Track precise rate limit consumption across the active API key.</p>
+            <p className="text-xs text-neutral-500">
+              Track precise rate limit consumption across the active API key.
+            </p>
           </div>
 
-          {/* Key Selector */}
+          {/* Key selector */}
           <div className="flex flex-col gap-1.5 w-full md:w-auto">
-            <label className="text-[11px] font-semibold tracking-wider uppercase text-neutral-500">Track specific key</label>
+            <label className="text-[11px] font-semibold tracking-wider uppercase text-neutral-500">
+              Track specific key
+            </label>
             <div className="relative">
               <select
                 value={activeKeyId}
@@ -542,10 +711,13 @@ export default function Dashboard() {
                 {Object.entries(data.models)
                   .filter(([id]) => id !== "default")
                   .map(([id, details]: [string, any]) => {
-                    const usage = getUsageForActiveKey(id);
+                    const usage        = getUsageForActiveKey(id);
                     const isWaitlisted = details.rpd === 0;
                     return (
-                      <tr key={id} className={`hover:bg-[#0d0d0d] transition-colors ${isWaitlisted ? "opacity-50 grayscale" : ""}`}>
+                      <tr
+                        key={id}
+                        className={`hover:bg-[#0d0d0d] transition-colors ${isWaitlisted ? "opacity-50 grayscale" : ""}`}
+                      >
                         <td className="px-5 py-4 font-medium text-white text-sm whitespace-nowrap">
                           {details.name}
                         </td>
@@ -556,7 +728,9 @@ export default function Dashboard() {
                             title="Copy API identifier"
                           >
                             {id}
-                            {copiedId === id ? <Check size={12} className="text-emerald-400 shrink-0" /> : <Copy size={12} className="shrink-0" />}
+                            {copiedId === id
+                              ? <Check size={12} className="text-emerald-400 shrink-0" />
+                              : <Copy size={12} className="shrink-0" />}
                           </button>
                         </td>
                         <td className="px-5 py-4 align-middle">
@@ -577,17 +751,23 @@ export default function Dashboard() {
             {Object.entries(data.models)
               .filter(([id]) => id !== "default")
               .map(([id, details]: [string, any]) => {
-                const usage = getUsageForActiveKey(id);
+                const usage        = getUsageForActiveKey(id);
                 const isWaitlisted = details.rpd === 0;
                 return (
-                  <div key={id} className={`p-4 flex flex-col gap-4 ${isWaitlisted ? "opacity-50 grayscale" : ""}`}>
+                  <div
+                    key={id}
+                    className={`p-4 flex flex-col gap-4 ${isWaitlisted ? "opacity-50 grayscale" : ""}`}
+                  >
                     <div className="flex items-center justify-between">
                       <span className="font-semibold text-white text-sm">{details.name}</span>
                       <button
                         onClick={() => handleCopy(id)}
-                        className="flex items-center gap-1.5 bg-neutral-900 border border-neutral-800 px-2 py-1 rounded md text-neutral-400 text-[10px] font-[family-name:var(--font-mono)]"
+                        className="flex items-center gap-1.5 bg-neutral-900 border border-neutral-800 px-2 py-1 rounded-md text-neutral-400 text-[10px] font-[family-name:var(--font-mono)]"
                       >
-                        {id} {copiedId === id ? <Check size={10} className="text-emerald-400" /> : <Copy size={10} />}
+                        {id}{" "}
+                        {copiedId === id
+                          ? <Check size={10} className="text-emerald-400" />
+                          : <Copy size={10} />}
                       </button>
                     </div>
                     <div className="grid grid-cols-2 gap-4 bg-[#0d0d0d] p-3 rounded-xl border border-neutral-800/50">
@@ -601,7 +781,7 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* ── Footer note ── */}
+      {/* ── Footer ── */}
       <div className="mt-10 pt-6 border-t border-neutral-800/50 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-neutral-600">
         <span className="flex items-center gap-2">
           <span className="relative flex h-2 w-2">
@@ -610,8 +790,9 @@ export default function Dashboard() {
           </span>
           Auto-refreshes metrics every 6 seconds
         </span>
-        <span className="font-medium">
-          GemPrism dashboard <ChevronUp size={12} className="inline ml-1 opacity-50" />
+        <span className="font-medium flex items-center gap-1">
+          GemPrism dashboard
+          <TrendingUp size={12} className="opacity-50" />
         </span>
       </div>
     </div>
