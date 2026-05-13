@@ -42,7 +42,7 @@ const FEATURES =[
   },
 ];
 
-const STEPS = [
+const STEPS =[
   "Create a free account and add your Gemini API keys.",
   "Receive a single secure Gateway Token for your project.",
   "Point the Google GenAI SDK's baseUrl at GemPrism.",
@@ -58,7 +58,7 @@ const ai = new GoogleGenAI({
   baseUrl: "https://gemprism.vercel.app/api/proxy",
 });
 
-// No other changes needed — full SDK compatibility
+// No other changes needed - full SDK compatibility
 const response = await ai.models.generateContent({
   model: "gemini-pro-latest",
   contents: "Explain quantum entanglement in one sentence.",
@@ -207,7 +207,7 @@ export default function LandingPage() {
             <p className="text-base sm:text-lg text-neutral-400 leading-relaxed mb-8 sm:mb-10 max-w-lg mx-auto lg:mx-0">
               GemPrism pools your Google Gemini API keys into a single gateway endpoint.
               Requests are load-balanced based on exact model limits, keys cool down automatically, and
-              dead keys are retired — all without changing your SDK code.
+              dead keys are retired, all without requiring changes to your SDK code.
             </p>
 
             <div className="flex flex-col sm:flex-row gap-3 sm:gap-4 w-full sm:w-auto">
@@ -239,7 +239,7 @@ export default function LandingPage() {
             </div>
           </div>
 
-          {/* right — live grid */}
+          {/* right - live grid */}
           <div
             className="opacity-0 animate-fade-up flex justify-center lg:justify-end w-full min-w-0"
             style={{ animationDelay: "150ms", animationFillMode: "forwards" }}
@@ -288,10 +288,10 @@ export default function LandingPage() {
               Drop-in integration
             </p>
             <h2 className="text-3xl sm:text-4xl lg:text-5xl font-bold text-white mb-6 tracking-tight">
-              Two lines of code.<br className="hidden sm:block" />Infinite scalability.
+              Two lines of code.<br />Infinite scalability.
             </h2>
             <p className="text-neutral-400 text-base lg:text-lg leading-relaxed mb-10">
-              GemPrism acts as a transparent proxy — there&apos;s no new SDK to learn. Just upload your
+              GemPrism acts as a transparent proxy, so there’s no new SDK to learn. Just upload your
               Gemini API keys, swap the <code className="text-emerald-400 bg-emerald-500/10 px-2 py-1 rounded text-sm font-[family-name:var(--font-mono)] border border-emerald-500/20">baseUrl</code>, and you&apos;re done.
             </p>
 
@@ -360,10 +360,10 @@ export default function LandingPage() {
             ))}
           </div>
 
-          <div className="mt-12 flex flex-wrap items-center justify-center gap-6 sm:gap-8 text-xs sm:text-sm font-medium text-neutral-500">
-            <span className="flex items-center gap-2"><span className="w-2.5 h-2.5 rounded-sm bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]" /> Healthy — routes normally</span>
-            <span className="flex items-center gap-2"><span className="w-2.5 h-2.5 rounded-sm bg-amber-400 shadow-[0_0_8px_rgba(251,191,36,0.5)]" /> Cooling — retried after 90s</span>
-            <span className="flex items-center gap-2"><span className="w-2.5 h-2.5 rounded-sm bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.4)]"  /> Dead — retired from pool</span>
+          <div className="mt-12 inline-flex flex-col sm:flex-row items-start sm:items-center gap-4 sm:gap-8 text-xs sm:text-sm font-medium text-neutral-500 text-left">
+            <span className="flex items-center gap-2"><span className="w-2.5 h-2.5 rounded-sm bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]" /> Healthy - routes normally</span>
+            <span className="flex items-center gap-2"><span className="w-2.5 h-2.5 rounded-sm bg-amber-400 shadow-[0_0_8px_rgba(251,191,36,0.5)]" /> Cooling - retried after 90s</span>
+            <span className="flex items-center gap-2"><span className="w-2.5 h-2.5 rounded-sm bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.4)]"  /> Dead - retired from pool</span>
           </div>
         </div>
       </section>
