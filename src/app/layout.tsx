@@ -56,7 +56,10 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" className={`${outfit.variable} ${mono.variable}`}>
-      <head>
+      <body
+        className="antialiased bg-[#030303] text-white"
+        style={{ fontFamily: "var(--font-outfit, 'Outfit', sans-serif)" }}
+      >
         <Script
           src="https://www.googletagmanager.com/gtag/js?id=G-9PRHBBL8BV"
           strategy="afterInteractive"
@@ -69,11 +72,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             gtag('config', 'G-9PRHBBL8BV');
           `}
         </Script>
-      </head>
-      <body
-        className="antialiased bg-[#030303] text-white"
-        style={{ fontFamily: "var(--font-outfit, 'Outfit', sans-serif)" }}
-      >
+
         {children}
       </body>
     </html>
