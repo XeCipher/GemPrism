@@ -2,9 +2,10 @@
 
 import { useState, useEffect } from "react";
 import { supabaseClient } from "@/lib/supabase";
-import { Layers, Eye, EyeOff, ArrowRight, MailCheck, Zap, Shield, Activity } from "lucide-react";
+import { Eye, EyeOff, ArrowRight, MailCheck, Zap, Shield, Activity } from "lucide-react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
+import { LogoLayeredCore } from "@/components/Logo";
 
 const PERKS = [
   { icon: Zap,      text: "Intelligent load balancing across your key pool" },
@@ -95,7 +96,7 @@ export default function Login() {
         
         {/* logo */}
         <Link href="/" className="flex items-center gap-2 text-white font-bold text-xl relative z-10">
-          <Layers className="text-emerald-500" size={24} />
+          <LogoLayeredCore className="text-emerald-500" size={24} />
           GemPrism
         </Link>
 
@@ -134,7 +135,7 @@ export default function Login() {
 
         {/* mobile logo */}
         <Link href="/" className="flex items-center justify-center gap-2 text-white font-bold text-xl mb-10 lg:hidden relative z-10">
-          <Layers className="text-emerald-500" size={28} />
+          <LogoLayeredCore className="text-emerald-500" size={28} />
           GemPrism
         </Link>
 

@@ -5,11 +5,12 @@ import { supabaseClient } from "@/lib/supabase";
 import {
   Activity, ShieldAlert, Zap, ServerCrash, Copy, Check,
   Database, Plus, LogOut, Trash2, RefreshCw, AlertCircle,
-  ChevronUp, Layers, KeyRound, TrendingUp, Code as CodeIcon, ChevronDown
+  ChevronUp, KeyRound, TrendingUp, Code as CodeIcon, ChevronDown
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { CodeBlock } from "@/components/CodeBlock";
+import { LogoLayeredCore } from "@/components/Logo";
 
 // ─── Toast ───────────────────────────────────────────────────────────────────
 
@@ -377,7 +378,7 @@ console.log(response.text);`;
       {/* ── Header ── */}
       <header className="mb-8 md:mb-10 flex flex-wrap items-center justify-between gap-4">
         <Link href="/" className="flex items-center gap-2.5 text-white font-semibold text-lg">
-          <Layers className="text-emerald-500" size={22} />
+          <LogoLayeredCore className="text-emerald-500" size={22} />
           <span>GemPrism</span> {/* Retained on Mobile */}
           <span className="hidden sm:inline text-neutral-600 font-normal text-sm">/</span>
           {/* Email dynamically hidden on mobile */}

@@ -3,9 +3,10 @@
 import React, { useState, useEffect } from "react";
 import Link from "next/link";
 import {
-  Activity, Zap, Shield, ArrowRight, ArrowDown, Layers, ChevronRight,
+  Activity, Zap, Shield, ArrowRight, ArrowDown, ChevronRight,
 } from "lucide-react";
 import { CodeBlock } from "@/components/CodeBlock";
+import { LogoLayeredCore } from "@/components/Logo";
 
 /* ─── Custom GitHub Icon ─── */
 function CustomGithubIcon({ size = 24, className = "" }: { size?: number; className?: string }) {
@@ -154,7 +155,7 @@ export default function LandingPage() {
       <nav className="sticky top-0 z-50 border-b border-neutral-800/60 bg-[#030303]/85 backdrop-blur-md">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between">
           <Link href="/" className="flex items-center gap-2 text-white font-bold tracking-tight text-lg sm:text-xl">
-            <Layers className="text-emerald-500" size={24} />
+            <LogoLayeredCore className="text-emerald-500" size={24} />
             GemPrism
           </Link>
 
@@ -390,7 +391,7 @@ export default function LandingPage() {
       <footer className="border-t border-neutral-800/50 py-10 bg-[#020202]">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 flex flex-col md:flex-row items-center justify-between gap-5">
           <div className="flex items-center gap-2.5 text-white font-bold text-lg">
-            <Layers className="text-emerald-500" size={20} />
+            <LogoLayeredCore className="text-emerald-500" size={20} />
             GemPrism
           </div>
           <p className="text-xs sm:text-sm text-neutral-600 text-center font-medium">
