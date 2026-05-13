@@ -1,205 +1,396 @@
 "use client";
 
-import { Activity, Zap, Shield, Code2, ArrowRight, Layers, CheckCircle2 } from "lucide-react";
+import { useState, useEffect, useRef } from "react";
 import Link from "next/link";
-import { useState } from "react";
+import {
+  Activity, Zap, Shield, ArrowRight, Layers, CheckCircle2,
+  Copy, Check, ChevronRight,
+} from "lucide-react";
 
-// Custom GitHub SVG Component
-const GithubIcon = ({ size = 24, className = "" }: { size?: number | string; className?: string }) => (
-  <svg
-    xmlns="http://www.w3.org/2000/svg"
-    width={size}
-    height={size}
-    viewBox="0 0 24 24"
-    fill="none"
-    stroke="currentColor"
-    strokeWidth="2"
-    strokeLinecap="round"
-    strokeLinejoin="round"
-    className={className}
-  >
-    <path d="M15 22v-4a4.8 4.8 0 0 0-1-3.24c3-.34 6-1.53 6-6.76a5.2 5.2 0 0 0-1.4-3.6 5.2 5.2 0 0 0-.1-3.7s-1-.3-3.5 1.4a11.5 11.5 0 0 0-6 0C6.5 1.6 5.5 1.9 5.5 1.9a5.2 5.2 0 0 0-.1 3.7 5.2 5.2 0 0 0-1.4 3.6c0 5.2 3 6.4 6 6.76A4.8 4.8 0 0 0 9 18v4" />
-    <path d="M9 18c-4.51 2-5-2-7-2" />
-  </svg>
-);
+/* ─── Custom GitHub Icon ─── */
+function CustomGithubIcon({ size = 24, className = "" }: { size?: number; className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width={size}
+      height={size}
+      className={className}
+      fill="currentColor"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z" />
+    </svg>
+  );
+}
 
-export default function LandingPage() {
-  const [copied, setCopied] = useState(false);
+/* ─── Types ─── */
+type NodeStatus = "healthy" | "cooling" | "dead";
+interface Node { id: number; status: NodeStatus; rpm: number }
 
-  const codeSnippet = `import { GoogleGenAI } from "@google/genai";
+/* ─── Constants ─── */
+const STATUSES: NodeStatus[] = ["healthy", "healthy", "healthy", "healthy", "cooling", "dead"];
 
-// 1. Initialize with your GemPrism Gateway Token
-// 2. Point the base URL to your GemPrism instance
+const FEATURES =[
+  {
+    icon: Zap,
+    title: "Intelligent Load Balancing",
+    desc: "Distributes traffic across your API key pool in real time, favouring keys with the lowest RPM and RPD counts.",
+  },
+  {
+    icon: Shield,
+    title: "Auto-Cooldown & Retry",
+    desc: "429 rate-limited? The node is sidelined for 90 seconds and the request is instantly rerouted to the next healthy key.",
+  },
+  {
+    icon: Activity,
+    title: "Live Telemetry",
+    desc: "Track node health, error rates, and per-model usage from a real-time dashboard — no extra tooling required.",
+  },
+];
+
+const STEPS = [
+  "Create a free account and add your Gemini API keys.",
+  "Receive a single secure Gateway Token for your project.",
+  "Point the Google GenAI SDK's baseUrl at GemPrism.",
+  "Watch live as we balance, retry, and recover failed nodes.",
+];
+
+const CODE = `import { GoogleGenAI } from "@google/genai";
+
+// ① Use your GemPrism Gateway Token as the API key
+// ② Point baseUrl at your GemPrism instance
 const ai = new GoogleGenAI({
   apiKey: "gp_live_your_gateway_token",
   baseUrl: "https://gemprism.vercel.app/api/proxy",
 });
 
-// GemPrism automatically load-balances across your 
-// uploaded keys, handling rate limits & cooldowns!
+// No other changes needed — full SDK compatibility
 const response = await ai.models.generateContent({
   model: "gemini-2.5-flash",
-  contents: "Explain quantum computing in one sentence.",
+  contents: "Explain quantum entanglement in one sentence.",
 });
 
 console.log(response.text);`;
 
-  const copyToClipboard = async () => {
-    try {
-      await navigator.clipboard.writeText(codeSnippet);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch (err) {
-      console.error("Failed to copy:", err);
-    }
+/* ─── Syntax Highlighter ─── */
+function HighlightedLine({ line }: { line: string }) {
+  if (line.trim().startsWith("//") || line.trim().startsWith("# ")) {
+    return <span className="text-neutral-500 italic">{line}</span>;
+  }
+  const keyword = /\b(import|from|const|await|new|return|async|function)\b/g;
+  const string  = /("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`)/g;
+  const prop    = /\b(baseUrl|apiKey|model|contents)\b/g;
+
+  let result = line
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+
+  result = result.replace(string,  (m) => `<em class="not-italic text-amber-300">${m}</em>`);
+  result = result.replace(keyword, (m) => `<strong class="font-normal text-emerald-400">${m}</strong>`);
+  result = result.replace(prop,    (m) => `<span class="text-cyan-400">${m}</span>`);
+
+  return <span dangerouslySetInnerHTML={{ __html: result }} />;
+}
+
+/* ─── Animated Key-Node Grid ─── */
+function NodeGrid() {
+  // Start with a stable, deterministic state so server and client render identically.
+  // Math.random() is only called client-side inside useEffect.
+  const [nodes, setNodes] = useState<Node[]>(() =>
+    Array.from({ length: 18 }, (_, i) => ({ id: i, status: "healthy" as NodeStatus, rpm: 0 }))
+  );
+  const [mounted, setMounted] = useState(false);
+
+  // Randomise after first paint so SSR HTML matches the initial client render.
+  useEffect(() => {
+    setNodes(
+      Array.from({ length: 18 }, (_, i) => ({
+        id: i,
+        status: STATUSES[Math.floor(Math.random() * STATUSES.length)],
+        rpm: Math.floor(Math.random() * 14),
+      }))
+    );
+    setMounted(true);
+  },[]);
+
+  useEffect(() => {
+    if (!mounted) return;
+    const t = setInterval(() => {
+      setNodes(prev =>
+        prev.map(n => {
+          if (Math.random() < 0.12) {
+            const s = STATUSES[Math.floor(Math.random() * STATUSES.length)];
+            return { ...n, status: s, rpm: Math.floor(Math.random() * 14) };
+          }
+          return { ...n, rpm: Math.max(0, n.rpm + Math.floor(Math.random() * 3 - 1)) };
+        })
+      );
+    }, 1400);
+    return () => clearInterval(t);
+  }, [mounted]);
+
+  const color: Record<NodeStatus, string> = {
+    healthy: "bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.6)]",
+    cooling: "bg-amber-400 shadow-[0_0_8px_rgba(251,191,36,0.5)]",
+    dead:    "bg-red-500   shadow-[0_0_8px_rgba(239,68,68,0.4)]",
   };
 
   return (
-    <div className="min-h-screen bg-[#050505] text-neutral-300 font-sans selection:bg-emerald-500/30 overflow-x-hidden">
-      {/* Navigation */}
-      <nav className="border-b border-neutral-800/50 bg-[#0a0a0a]/80 backdrop-blur-md sticky top-0 z-50">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between">
-          <div className="flex items-center gap-2 text-white font-semibold tracking-tight">
-            <Layers className="text-emerald-500" size={24} />
-            <span className="text-lg">GemPrism</span>
+    <div className="relative rounded-2xl border border-neutral-800 bg-[#070707] p-6 w-full max-w-sm mx-auto shadow-2xl">
+      {/* header */}
+      <div className="flex items-center justify-between mb-5 font-[family-name:var(--font-mono)] text-xs">
+        <span className="text-neutral-500">GATEWAY NODES</span>
+        <span className="flex items-center gap-1.5 text-emerald-400">
+          <span className="relative flex h-1.5 w-1.5">
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+            <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-emerald-500" />
+          </span>
+          LIVE
+        </span>
+      </div>
+
+      {/* grid */}
+      <div className="grid grid-cols-6 gap-2.5">
+        {nodes.map(n => (
+          <div key={n.id} className="flex flex-col items-center gap-1 group cursor-default">
+            <div
+              className={`w-5 h-5 rounded-sm transition-all duration-500 ${color[n.status]} ${
+                n.status === "healthy" ? "animate-pulse" : ""
+              }`}
+            />
+            <span className="text-[9px] text-neutral-600 group-hover:text-neutral-400 transition-colors font-[family-name:var(--font-mono)]">
+              {n.rpm}
+            </span>
           </div>
-          <div className="flex items-center gap-3 sm:gap-4 text-sm font-medium">
-            <a 
-              href="https://github.com/XeCipher/GemPrism" 
-              target="_blank" 
-              rel="noopener noreferrer" 
-              className="text-neutral-400 hover:text-white transition-colors flex items-center p-1 sm:p-2"
-              title="View Source on GitHub"
+        ))}
+      </div>
+
+      {/* legend */}
+      <div className="mt-5 pt-4 border-t border-neutral-800/60 flex items-center justify-between font-[family-name:var(--font-mono)] text-[10px] text-neutral-500">
+        {(["healthy","cooling","dead"] as NodeStatus[]).map(s => (
+          <span key={s} className="flex items-center gap-1.5">
+            <span className={`w-2 h-2 rounded-sm ${color[s].split(" ")[0]}`} />
+            {s.toUpperCase()}:&nbsp;{nodes.filter(n => n.status === s).length}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ─── Main Component ─── */
+export default function LandingPage() {
+  const [copied, setCopied] = useState(false);
+
+  const copy = async () => {
+    await navigator.clipboard.writeText(CODE).catch(() => {});
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  return (
+    <div className="min-h-screen bg-[#030303] bg-grid text-neutral-300 overflow-x-hidden selection:bg-emerald-500/25">
+
+      {/* ── Navigation ── */}
+      <nav className="sticky top-0 z-50 border-b border-neutral-800/60 bg-[#030303]/85 backdrop-blur-md">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between">
+          <Link href="/" className="flex items-center gap-2 text-white font-semibold tracking-tight text-lg">
+            <Layers className="text-emerald-500" size={22} />
+            GemPrism
+          </Link>
+
+          <div className="flex items-center gap-2">
+            <a
+              href="https://github.com/XeCipher/GemPrism"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="p-2 text-neutral-400 hover:text-white transition-colors"
+              aria-label="GitHub"
             >
-              <GithubIcon size={20} />
+              <CustomGithubIcon size={20} />
             </a>
-            <Link href="/login" className="bg-white text-black px-4 py-2 rounded-full hover:bg-neutral-200 transition-colors">
-              Get Started
+            <Link
+              href="/dashboard"
+              className="hidden sm:flex items-center gap-1 text-sm text-neutral-400 hover:text-white transition-colors px-3 py-2"
+            >
+              Dashboard
+            </Link>
+            <Link
+              href="/login"
+              className="flex items-center gap-1.5 bg-emerald-500 hover:bg-emerald-400 text-black text-sm font-semibold px-4 py-2 rounded-full transition-colors"
+            >
+              Get Started <ChevronRight size={14} />
             </Link>
           </div>
         </div>
       </nav>
 
-      {/* Hero Section */}
-      <section className="max-w-7xl mx-auto px-4 sm:px-6 pt-16 sm:pt-24 pb-12 sm:pb-16 text-center">
-        <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs font-semibold tracking-wide mb-6 sm:mb-8">
-          <span className="relative flex h-2 w-2">
-            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-            <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
-          </span>
-          Public Beta Now Live
-        </div>
-        <h1 className="text-4xl sm:text-5xl md:text-7xl font-bold text-white tracking-tight mb-6 leading-tight">
-          High-Availability Routing <br className="hidden md:block" />
-          <span className="text-transparent bg-clip-text bg-gradient-to-r from-emerald-400 to-cyan-500">
-            for the Gemini API.
-          </span>
-        </h1>
-        <p className="text-base sm:text-lg md:text-xl text-neutral-400 max-w-2xl mx-auto mb-8 sm:mb-10 leading-relaxed px-2">
-          Bring your own keys. We handle the load balancing, automatic rate-limit cooling, and gateway traversal so your AI applications never experience downtime.
-        </p>
-        <div className="flex flex-col sm:flex-row items-center justify-center gap-4 px-4 sm:px-0">
-          <Link href="/login" className="flex items-center gap-2 bg-emerald-500 text-black px-6 py-3.5 sm:py-3 rounded-full font-medium hover:bg-emerald-400 transition-all w-full sm:w-auto justify-center">
-            Start Routing Free <ArrowRight size={18} />
-          </Link>
-          <a href="#how-it-works" className="flex items-center gap-2 bg-[#111] border border-neutral-800 text-white px-6 py-3.5 sm:py-3 rounded-full font-medium hover:bg-[#1a1a1a] transition-all w-full sm:w-auto justify-center">
-            View Documentation
-          </a>
-        </div>
-      </section>
+      {/* ── Hero ── */}
+      <section className="max-w-7xl mx-auto px-4 sm:px-6 pt-20 sm:pt-32 pb-16 sm:pb-20">
+        <div className="grid lg:grid-cols-2 gap-12 items-center">
 
-      {/* Features Grid */}
-      <section className="max-w-7xl mx-auto px-4 sm:px-6 py-16 sm:py-20 border-t border-neutral-800/50">
-        <div className="grid sm:grid-cols-2 md:grid-cols-3 gap-6 sm:gap-8">
-          {[
-            {
-              icon: Zap,
-              title: "Intelligent Load Balancing",
-              desc: "Distribute traffic evenly across your pool of API keys based on real-time RPM and RPD limits."
-            },
-            {
-              icon: Shield,
-              title: "Auto-Cooldown & Retry",
-              desc: "If a key hits a 429 rate limit, we instantly sideline it for 90 seconds and seamlessly route the request to the next healthy node."
-            },
-            {
-              icon: Activity,
-              title: "Granular Telemetry",
-              desc: "Monitor your usage, dead nodes, and model consumption in real-time through a beautiful developer dashboard."
-            }
-          ].map((feature, i) => (
-            <div key={i} className="bg-[#0a0a0a] border border-neutral-800/80 p-6 sm:p-8 rounded-2xl hover:border-neutral-700 transition-colors">
-              <div className="h-12 w-12 bg-neutral-900 border border-neutral-800 flex items-center justify-center rounded-xl mb-6 text-emerald-400">
-                <feature.icon size={24} />
-              </div>
-              <h3 className="text-xl font-semibold text-white mb-3">{feature.title}</h3>
-              <p className="text-neutral-400 leading-relaxed text-sm sm:text-base">{feature.desc}</p>
+          {/* left */}
+          <div className="opacity-0 animate-fade-up" style={{ animationDelay: "0ms", animationFillMode: "forwards" }}>
+            <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-emerald-500/10 border border-emerald-500/25 text-emerald-400 text-xs font-semibold tracking-wide mb-7">
+              <span className="relative flex h-2 w-2">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500" />
+              </span>
+              Public Beta · Free to Use
             </div>
-          ))}
-        </div>
-      </section>
 
-      {/* How It Works / Code Section */}
-      <section id="how-it-works" className="bg-[#0a0a0a] py-16 sm:py-24 border-y border-neutral-800/50 overflow-hidden">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 grid lg:grid-cols-2 gap-12 sm:gap-16 items-center">
-          
-          {/* Text Container: min-w-0 ensures it doesn't break grid on mobile */}
-          <div className="min-w-0">
-            <h2 className="text-3xl sm:text-4xl font-bold text-white mb-6">Drop-in replacement for Google Gen AI.</h2>
-            <p className="text-neutral-400 text-base sm:text-lg mb-8 leading-relaxed">
-              GemPrism acts as a transparent proxy. You don't need to learn a new SDK. Just upload your Google API keys to our secure vault, get your single Gateway Token, and change your `baseUrl`.
+            <h1 className="text-4xl sm:text-5xl lg:text-6xl font-bold text-white tracking-tight leading-[1.1] mb-5">
+              Never hit a<br />
+              <span className="shimmer-text">rate limit again.</span>
+            </h1>
+
+            <p className="text-base sm:text-lg text-neutral-400 leading-relaxed mb-8 max-w-lg">
+              GemPrism pools your Google Gemini API keys into a single gateway endpoint.
+              Requests are load-balanced, rate-limited keys cool down automatically, and
+              dead keys are retired — all without changing your SDK code.
             </p>
-            <ul className="space-y-4">
+
+            <div className="flex flex-col sm:flex-row gap-3">
+              <Link
+                href="/login"
+                className="flex items-center justify-center gap-2 bg-emerald-500 hover:bg-emerald-400 text-black font-semibold px-6 py-3.5 rounded-xl transition-all hover:scale-[1.02] active:scale-[0.98]"
+              >
+                Start routing free <ArrowRight size={18} />
+              </Link>
+              <a
+                href="#how-it-works"
+                className="flex items-center justify-center gap-2 bg-neutral-900 hover:bg-neutral-800 border border-neutral-700 text-white px-6 py-3.5 rounded-xl transition-colors"
+              >
+                See how it works
+              </a>
+            </div>
+
+            <div className="mt-10 flex items-center gap-6 text-sm text-neutral-500">
               {[
-                "Create an account and upload multiple Gemini API keys.",
-                "Generate a single, secure Gateway Token.",
-                "Update your SDK initialization (as shown).",
-                "Watch the dashboard as we handle the traffic routing!"
-              ].map((step, i) => (
-                <li key={i} className="flex items-start gap-3 text-neutral-300 text-sm sm:text-base" >
-                  <CheckCircle2 className="text-emerald-500 shrink-0 mt-0.5" size={20} />
-                  <span>{step}</span>
-                </li>
+                { v: "100%", l: "Open source" },
+                { v: "0ms",  l: "Cold starts (edge runtime)" },
+                { v: "BYOK", l: "Your keys, your control" },
+              ].map(({ v, l }) => (
+                <div key={l} className="flex flex-col">
+                  <span className="text-white font-semibold text-base" style={{ fontFamily: "var(--font-mono)" }}>{v}</span>
+                  <span>{l}</span>
+                </div>
               ))}
-            </ul>
+            </div>
           </div>
 
-          {/* Code Container: min-w-0 is required for horizontal scrolling inside CSS Grids */}
-          <div className="relative w-full min-w-0">
-            <div className="absolute inset-0 bg-gradient-to-tr from-emerald-500/10 to-cyan-500/10 blur-3xl rounded-full"></div>
-            <div className="relative bg-[#050505] border border-neutral-800 rounded-xl sm:rounded-2xl overflow-hidden shadow-2xl w-full">
-              <div className="flex items-center justify-between px-4 py-3 bg-[#0a0a0a] border-b border-neutral-800">
-                <div className="flex items-center gap-2">
-                  <Code2 size={16} className="text-neutral-500" />
-                  <span className="text-sm font-mono text-neutral-400">app.ts</span>
+          {/* right — live node grid */}
+          <div
+            className="opacity-0 animate-fade-up flex justify-center lg:justify-end"
+            style={{ animationDelay: "150ms", animationFillMode: "forwards" }}
+          >
+            <NodeGrid />
+          </div>
+        </div>
+      </section>
+
+      {/* ── Features ── */}
+      <section className="border-t border-neutral-800/50 py-20">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6">
+          <div className="text-center mb-12">
+            <p className="text-xs font-semibold tracking-widest text-emerald-500 uppercase mb-3">
+              Why GemPrism
+            </p>
+            <h2 className="text-3xl sm:text-4xl font-bold text-white">
+              Production-grade AI routing
+            </h2>
+          </div>
+
+          <div className="grid sm:grid-cols-3 gap-6">
+            {FEATURES.map((f, i) => (
+              <div
+                key={i}
+                className="group bg-[#080808] border border-neutral-800 hover:border-emerald-500/30 rounded-2xl p-7 transition-all duration-300 hover:bg-[#0a0a0a]"
+              >
+                <div className="h-11 w-11 bg-emerald-500/10 border border-emerald-500/20 rounded-xl flex items-center justify-center mb-5 text-emerald-400 group-hover:bg-emerald-500/15 transition-colors">
+                  <f.icon size={22} />
                 </div>
-                <button 
-                  onClick={copyToClipboard}
-                  className="text-xs font-medium text-neutral-400 hover:text-white transition-colors flex items-center gap-1.5 p-1"
+                <h3 className="text-white font-semibold text-lg mb-2">{f.title}</h3>
+                <p className="text-neutral-400 text-sm leading-relaxed">{f.desc}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* ── How it Works + Code ── */}
+      <section id="how-it-works" className="border-t border-neutral-800/50 py-20">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 grid lg:grid-cols-2 gap-16 items-start">
+
+          {/* steps */}
+          <div>
+            <p className="text-xs font-semibold tracking-widest text-emerald-500 uppercase mb-3">
+              Drop-in integration
+            </p>
+            <h2 className="text-3xl sm:text-4xl font-bold text-white mb-6">
+              Two lines of code.<br />Infinite scalability.
+            </h2>
+            <p className="text-neutral-400 text-base leading-relaxed mb-10">
+              GemPrism is a transparent proxy — no new SDK to learn. Just upload your
+              Gemini API keys, swap the <code className="text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded text-sm font-[family-name:var(--font-mono)]">baseUrl</code>, and you&apos;re done.
+            </p>
+
+            <ol className="space-y-5">
+              {STEPS.map((step, i) => (
+                <li key={i} className="flex gap-4 items-start">
+                  <span
+                    className="shrink-0 w-7 h-7 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-sm font-bold flex items-center justify-center mt-0.5"
+                    style={{ fontFamily: "var(--font-mono)" }}
+                  >
+                    {i + 1}
+                  </span>
+                  <span className="text-neutral-300 text-sm sm:text-base leading-relaxed">{step}</span>
+                </li>
+              ))}
+            </ol>
+
+            <Link
+              href="/login"
+              className="inline-flex items-center gap-2 mt-10 bg-white hover:bg-neutral-100 text-black font-semibold px-5 py-3 rounded-xl transition-colors text-sm"
+            >
+              Create free account <ArrowRight size={16} />
+            </Link>
+          </div>
+
+          {/* code block */}
+          <div className="relative">
+            <div className="absolute inset-0 -m-8 bg-gradient-to-tr from-emerald-500/5 to-cyan-500/5 blur-3xl rounded-full pointer-events-none" />
+            <div className="relative bg-[#070707] border border-neutral-800 rounded-2xl overflow-hidden shadow-2xl">
+              {/* titlebar */}
+              <div className="flex items-center justify-between px-5 py-3 bg-[#0a0a0a] border-b border-neutral-800">
+                <div className="flex items-center gap-3">
+                  <div className="flex gap-1.5">
+                    <div className="w-3 h-3 rounded-full bg-neutral-700" />
+                    <div className="w-3 h-3 rounded-full bg-neutral-700" />
+                    <div className="w-3 h-3 rounded-full bg-neutral-700" />
+                  </div>
+                  <span className="text-xs text-neutral-500 font-[family-name:var(--font-mono)]">app.ts</span>
+                </div>
+                <button
+                  onClick={copy}
+                  className="flex items-center gap-1.5 text-xs text-neutral-500 hover:text-white transition-colors"
                 >
-                  {copied ? <span className="text-emerald-400">Copied!</span> : "Copy code"}
+                  {copied
+                    ? <><Check size={13} className="text-emerald-400" /><span className="text-emerald-400">Copied</span></>
+                    : <><Copy size={13} /><span>Copy</span></>}
                 </button>
               </div>
-              
-              {/* Mobile optimized code block: w-max ensures background covers entire scrollable area */}
-              <div className="p-4 w-full overflow-x-auto">
-                <pre className="text-xs sm:text-sm font-mono leading-relaxed text-neutral-300 w-max min-w-full">
-                  <code>
-                    {codeSnippet.split('\n').map((line, i) => (
-                      <div key={i} className="flex gap-4">
-                        <span className="text-neutral-600 select-none w-4 text-right shrink-0">{i + 1}</span>
-                        <span>
-                          {line.includes('//') ? (
-                            <span className="text-neutral-500">{line}</span>
-                          ) : line.includes('import') || line.includes('const') || line.includes('await') || line.includes('new') ? (
-                            <span className="text-emerald-400">{line}</span>
-                          ) : (
-                            line
-                          )}
-                        </span>
-                      </div>
-                    ))}
-                  </code>
+
+              {/* code */}
+              <div className="p-5 overflow-x-auto">
+                <pre className="text-xs sm:text-sm leading-relaxed font-[family-name:var(--font-mono)]">
+                  {CODE.split("\n").map((line, i) => (
+                    <div key={i} className="flex gap-4 min-w-max">
+                      <span className="text-neutral-700 select-none w-4 text-right shrink-0 text-xs">{i + 1}</span>
+                      <HighlightedLine line={line} />
+                    </div>
+                  ))}
                 </pre>
               </div>
             </div>
@@ -207,23 +398,81 @@ console.log(response.text);`;
         </div>
       </section>
 
-      {/* Footer */}
-      <footer className="max-w-7xl mx-auto px-4 sm:px-6 py-12 flex flex-col sm:flex-row items-center justify-between gap-6 border-t border-neutral-800/50 mt-12">
-        <div className="flex items-center gap-2 text-white font-semibold">
-          <Layers className="text-emerald-500" size={20} />
-          GemPrism
+      {/* ── Request Flow Diagram ── */}
+      <section className="border-t border-neutral-800/50 py-20">
+        <div className="max-w-4xl mx-auto px-4 sm:px-6 text-center">
+          <p className="text-xs font-semibold tracking-widest text-emerald-500 uppercase mb-3">
+            Architecture
+          </p>
+          <h2 className="text-3xl font-bold text-white mb-12">Request flow</h2>
+
+          <div className="flex flex-col sm:flex-row items-center justify-center gap-0">
+            {[
+              { label: "Your App",        sub: "Any GenAI SDK",          color: "border-neutral-700  bg-[#0a0a0a]" },
+              { label: "GemPrism",        sub: "Edge Proxy",             color: "border-emerald-500/40 bg-emerald-500/5 text-emerald-400" },
+              { label: "Key Pool",        sub: "Your Gemini API Keys",   color: "border-neutral-700  bg-[#0a0a0a]" },
+              { label: "Google AI",       sub: "Generative Language API",color: "border-neutral-700  bg-[#0a0a0a]" },
+            ].map((box, i, arr) => (
+              <div key={i} className="flex items-center">
+                <div className={`border rounded-xl px-5 py-4 text-center min-w-[130px] ${box.color}`}>
+                  <div className={`font-semibold text-sm ${box.color.includes("emerald") ? "text-emerald-300" : "text-white"}`}>
+                    {box.label}
+                  </div>
+                  <div className="text-neutral-500 text-xs mt-1">{box.sub}</div>
+                </div>
+                {i < arr.length - 1 && (
+                  <div className="flex items-center px-2 sm:px-3">
+                    <div className="h-px w-6 sm:w-8 bg-neutral-700" />
+                    <ArrowRight size={14} className="text-neutral-600 -ml-1" />
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+
+          <div className="mt-8 flex flex-wrap items-center justify-center gap-6 text-xs text-neutral-500">
+            <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-sm bg-emerald-500" /> Healthy — routes normally</span>
+            <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-sm bg-amber-400" /> Cooling — retried after 90s</span>
+            <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-sm bg-red-500"  /> Dead — retired from pool</span>
+          </div>
         </div>
-        <p className="text-sm text-neutral-500 text-center sm:text-left">
-          Built for high-scale AI applications. Not officially affiliated with Google.
-        </p>
-        <div className="flex items-center gap-4">
-          <a 
-            href="https://github.com/XeCipher/GemPrism" 
-            target="_blank" 
-            rel="noopener noreferrer" 
-            className="text-neutral-500 hover:text-white transition-colors flex items-center gap-2 text-sm font-medium"
+      </section>
+
+      {/* ── CTA ── */}
+      <section className="border-t border-neutral-800/50 py-20">
+        <div className="max-w-2xl mx-auto px-4 text-center">
+          <h2 className="text-3xl sm:text-4xl font-bold text-white mb-4">
+            Ready to stop worrying<br />about rate limits?
+          </h2>
+          <p className="text-neutral-400 mb-8">
+            Set up in under two minutes. Free forever for personal use.
+          </p>
+          <Link
+            href="/login"
+            className="inline-flex items-center gap-2 bg-emerald-500 hover:bg-emerald-400 text-black font-bold px-8 py-4 rounded-xl text-lg transition-all hover:scale-[1.02] active:scale-[0.98]"
           >
-            <GithubIcon size={18} /> Open Source
+            Get started for free <ArrowRight size={20} />
+          </Link>
+        </div>
+      </section>
+
+      {/* ── Footer ── */}
+      <footer className="border-t border-neutral-800/50 py-10">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 flex flex-col sm:flex-row items-center justify-between gap-5">
+          <div className="flex items-center gap-2 text-white font-semibold">
+            <Layers className="text-emerald-500" size={18} />
+            GemPrism
+          </div>
+          <p className="text-xs text-neutral-600 text-center">
+            Not affiliated with Google. Gemini is a trademark of Google LLC.
+          </p>
+          <a
+            href="https://github.com/XeCipher/GemPrism"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center gap-2 text-neutral-500 hover:text-white transition-colors text-sm"
+          >
+            <CustomGithubIcon size={16} /> Open Source
           </a>
         </div>
       </footer>
