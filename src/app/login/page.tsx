@@ -8,8 +8,8 @@ import Link from "next/link";
 
 const PERKS = [
   { icon: Zap,      text: "Intelligent load balancing across your key pool" },
-  { icon: Shield,   text: "Auto-cooldown & retry on 429 rate limits" },
-  { icon: Activity, text: "Real-time telemetry and node health monitoring" },
+  { icon: Shield,   text: "Auto-cooldown & retry on per-model rate limits" },
+  { icon: Activity, text: "Real-time telemetry and API health monitoring" },
 ];
 
 export default function Login() {
@@ -62,7 +62,7 @@ export default function Login() {
   if (checkEmail) {
     return (
       <div className="min-h-screen bg-[#030303] bg-dots flex items-center justify-center px-4">
-        <div className="bg-[#0a0a0a] p-10 rounded-2xl border border-emerald-500/20 w-full max-w-md flex flex-col items-center gap-5 text-center animate-fade-up shadow-2xl">
+        <div className="bg-[#0a0a0a] p-8 md:p-10 rounded-3xl border border-emerald-500/20 w-full max-w-md flex flex-col items-center gap-5 text-center animate-fade-up shadow-[0_0_40px_rgba(16,185,129,0.05)]">
           <div className="h-16 w-16 bg-emerald-500/10 text-emerald-400 rounded-2xl flex items-center justify-center">
             <MailCheck size={30} />
           </div>
@@ -76,7 +76,7 @@ export default function Login() {
           </div>
           <button
             onClick={() => setCheckEmail(false)}
-            className="text-emerald-500 hover:text-emerald-400 text-sm font-medium transition-colors"
+            className="text-emerald-500 hover:text-emerald-400 text-sm font-medium transition-colors mt-2"
           >
             ← Back to sign in
           </button>
@@ -87,32 +87,34 @@ export default function Login() {
 
   /* ── Main layout ── */
   return (
-    <div className="min-h-screen bg-[#030303] flex">
+    <div className="min-h-screen bg-[#030303] flex selection:bg-emerald-500/25">
 
       {/* ── Left panel (desktop only) ── */}
-      <div className="hidden lg:flex flex-col justify-between w-[42%] bg-[#060606] border-r border-neutral-800 p-12 bg-grid">
+      <div className="hidden lg:flex flex-col justify-between w-[45%] bg-[#060606] border-r border-neutral-800 p-12 bg-grid relative overflow-hidden">
+        <div className="absolute top-0 left-0 w-full h-full bg-gradient-to-br from-emerald-500/5 to-transparent pointer-events-none" />
+        
         {/* logo */}
-        <Link href="/" className="flex items-center gap-2 text-white font-semibold text-xl">
+        <Link href="/" className="flex items-center gap-2 text-white font-bold text-xl relative z-10">
           <Layers className="text-emerald-500" size={24} />
           GemPrism
         </Link>
 
         {/* centre copy */}
-        <div>
-          <h2 className="text-3xl font-bold text-white leading-snug mb-4">
-            One token.<br />
+        <div className="relative z-10">
+          <h2 className="text-4xl font-bold text-white leading-[1.2] mb-5 tracking-tight">
+            One gateway token.<br />
             <span className="text-emerald-400">Unlimited throughput.</span>
           </h2>
-          <p className="text-neutral-400 text-sm leading-relaxed mb-10 max-w-xs">
+          <p className="text-neutral-400 text-base leading-relaxed mb-10 max-w-sm">
             Pool your Gemini API keys into a single, high-availability gateway and let
-            GemPrism handle the rate limits for you.
+            GemPrism handle model-specific rate limits and active failovers for you.
           </p>
 
-          <ul className="space-y-5">
+          <ul className="space-y-6">
             {PERKS.map(({ icon: Icon, text }) => (
-              <li key={text} className="flex items-center gap-3 text-neutral-300 text-sm">
-                <span className="shrink-0 w-8 h-8 bg-emerald-500/10 border border-emerald-500/20 rounded-lg flex items-center justify-center text-emerald-400">
-                  <Icon size={16} />
+              <li key={text} className="flex items-center gap-4 text-neutral-300 text-sm font-medium">
+                <span className="shrink-0 w-10 h-10 bg-[#0a0a0a] border border-neutral-800 rounded-xl flex items-center justify-center text-emerald-400 shadow-lg">
+                  <Icon size={18} />
                 </span>
                 {text}
               </li>
@@ -121,34 +123,35 @@ export default function Login() {
         </div>
 
         {/* footer note */}
-        <p className="text-neutral-600 text-xs">
+        <p className="text-neutral-600 text-xs font-medium relative z-10">
           Free to use · Open source · Not affiliated with Google
         </p>
       </div>
 
       {/* ── Right panel — form ── */}
-      <div className="flex-1 flex flex-col items-center justify-center px-6 py-12">
+      <div className="flex-1 flex flex-col items-center justify-center px-4 py-10 relative">
+        <div className="absolute inset-0 bg-dots opacity-50 lg:hidden pointer-events-none" />
 
         {/* mobile logo */}
-        <Link href="/" className="flex items-center gap-2 text-white font-semibold text-xl mb-10 lg:hidden">
-          <Layers className="text-emerald-500" size={24} />
+        <Link href="/" className="flex items-center justify-center gap-2 text-white font-bold text-xl mb-10 lg:hidden relative z-10">
+          <Layers className="text-emerald-500" size={28} />
           GemPrism
         </Link>
 
-        <div className="w-full max-w-sm">
-          <h1 className="text-2xl font-bold text-white mb-1">
+        <div className="w-full max-w-sm bg-[#0a0a0a] lg:bg-transparent p-6 sm:p-8 lg:p-0 rounded-3xl lg:rounded-none border border-neutral-800/80 lg:border-none shadow-2xl lg:shadow-none relative z-10 animate-fade-up lg:animate-none">
+          <h1 className="text-2xl sm:text-3xl font-bold text-white mb-2 tracking-tight">
             {isSignUp ? "Create your account" : "Welcome back"}
           </h1>
-          <p className="text-neutral-500 text-sm mb-8">
+          <p className="text-neutral-500 text-sm mb-8 font-medium">
             {isSignUp
               ? "Start routing Gemini API requests in minutes."
               : "Sign in to manage your gateway."}
           </p>
 
-          <form onSubmit={handleAuth} className="flex flex-col gap-4" noValidate>
+          <form onSubmit={handleAuth} className="flex flex-col gap-4.5" noValidate>
             {/* email */}
-            <div className="flex flex-col gap-1.5">
-              <label htmlFor="email" className="text-xs text-neutral-400 font-medium">
+            <div className="flex flex-col gap-2">
+              <label htmlFor="email" className="text-xs text-neutral-400 font-semibold uppercase tracking-wider">
                 Email address
               </label>
               <input
@@ -159,13 +162,13 @@ export default function Login() {
                 onChange={e => setEmail(e.target.value)}
                 placeholder="you@example.com"
                 required
-                className="bg-[#0c0c0c] border border-neutral-800 focus:border-emerald-500 text-white placeholder:text-neutral-600 rounded-xl px-4 py-3 text-sm outline-none transition-colors"
+                className="bg-[#0f0f0f] border border-neutral-800 focus:border-emerald-500 text-white placeholder:text-neutral-600 rounded-xl px-4 py-3.5 text-sm outline-none transition-all focus:shadow-[0_0_0_3px_rgba(16,185,129,0.1)]"
               />
             </div>
 
             {/* password */}
-            <div className="flex flex-col gap-1.5">
-              <label htmlFor="password" className="text-xs text-neutral-400 font-medium">
+            <div className="flex flex-col gap-2">
+              <label htmlFor="password" className="text-xs text-neutral-400 font-semibold uppercase tracking-wider">
                 Password
               </label>
               <div className="relative">
@@ -177,12 +180,12 @@ export default function Login() {
                   onChange={e => setPassword(e.target.value)}
                   placeholder={isSignUp ? "Min. 8 characters" : "Your password"}
                   required
-                  className="w-full bg-[#0c0c0c] border border-neutral-800 focus:border-emerald-500 text-white placeholder:text-neutral-600 rounded-xl px-4 py-3 pr-11 text-sm outline-none transition-colors"
+                  className="w-full bg-[#0f0f0f] border border-neutral-800 focus:border-emerald-500 text-white placeholder:text-neutral-600 rounded-xl px-4 py-3.5 pr-11 text-sm outline-none transition-all focus:shadow-[0_0_0_3px_rgba(16,185,129,0.1)]"
                 />
                 <button
                   type="button"
                   onClick={() => setShowPass(p => !p)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-neutral-500 hover:text-neutral-300 transition-colors"
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-neutral-500 hover:text-white transition-colors p-1"
                   aria-label={showPass ? "Hide password" : "Show password"}
                 >
                   {showPass ? <EyeOff size={16} /> : <Eye size={16} />}
@@ -192,7 +195,7 @@ export default function Login() {
 
             {/* inline error */}
             {error && (
-              <div className="bg-red-500/10 border border-red-500/25 rounded-xl px-4 py-3 text-red-400 text-xs leading-relaxed animate-fade-in">
+              <div className="bg-red-500/10 border border-red-500/25 rounded-xl px-4 py-3 text-red-400 text-xs font-medium leading-relaxed animate-fade-in mt-1">
                 {error}
               </div>
             )}
@@ -201,7 +204,7 @@ export default function Login() {
             <button
               type="submit"
               disabled={loading}
-              className="mt-1 bg-emerald-500 hover:bg-emerald-400 active:bg-emerald-600 disabled:opacity-60 disabled:cursor-not-allowed text-black font-semibold py-3.5 rounded-xl text-sm transition-all flex items-center justify-center gap-2"
+              className="mt-2 bg-emerald-500 hover:bg-emerald-400 active:bg-emerald-600 disabled:opacity-60 disabled:cursor-not-allowed text-black font-bold py-3.5 rounded-xl text-sm transition-all flex items-center justify-center gap-2 shadow-[0_4px_14px_rgba(16,185,129,0.25)] hover:shadow-[0_6px_20px_rgba(16,185,129,0.3)]"
             >
               {loading
                 ? <><span className="w-4 h-4 rounded-full border-2 border-black/30 border-t-black animate-spin" /> Please wait…</>
@@ -210,10 +213,10 @@ export default function Login() {
           </form>
 
           {/* toggle */}
-          <div className="mt-6 text-center">
+          <div className="mt-8 text-center border-t border-neutral-800/60 pt-6">
             <button
               onClick={() => { setIsSignUp(s => !s); setError(""); }}
-              className="text-sm text-neutral-500 hover:text-white transition-colors"
+              className="text-sm text-neutral-400 hover:text-white font-medium transition-colors"
             >
               {isSignUp
                 ? "Already have an account? Sign in"

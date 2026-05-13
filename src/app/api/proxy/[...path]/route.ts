@@ -29,52 +29,70 @@ export async function POST(req: Request, { params }: { params: Promise<{ path: s
   
   const limits = getModelLimits(modelName);
   if (limits.rpd === 0) {
-    return NextResponse.json({ error: `Model ${modelName} is waitlisted.` }, { status: 403 });
+    return NextResponse.json({ error: `Model ${modelName} is waitlisted or unavailable.` }, { status: 403 });
   }
 
-  // 3. Fetch User's Keys
-  const { data: keys } = await supabaseAdmin
-    .from('api_keys')
-    .select('*')
-    .eq('user_id', userId);
+  // 3. Fetch User's Keys & Model-Specific Usage
+  const [keysReq, usageReq] = await Promise.all([
+    supabaseAdmin.from('api_keys').select('*').eq('user_id', userId),
+    supabaseAdmin.from('model_usage').select('*').eq('user_id', userId).eq('model_name', modelName)
+  ]);
 
-  if (!keys || keys.length === 0) {
-    return NextResponse.json({ error: 'No API keys uploaded to this Gateway.' }, { status: 400 });
+  const keys = keysReq.data || [];
+  const usages = usageReq.data ||[];
+
+  if (keys.length === 0) {
+    return NextResponse.json({ error: 'No API keys have been added to this Gateway account.' }, { status: 400 });
   }
 
   const now = Date.now();
   const todayStr = new Date().toISOString().split('T')[0];
 
-  // 4. Lazy Evaluation (Reset limits if time passed)
-  const hydratedKeys = keys.map(node => {
-    let mutated = false;
-    if (node.rpd_date !== todayStr) {
-      node.rpd_count = 0; node.rpd_date = todayStr; mutated = true;
-    }
-    if (now - node.rpm_window_start > 60000) {
-      node.rpm_count = 0; node.rpm_window_start = now; mutated = true;
-    }
-    if (node.status === 'cooling' && now > node.cooldown_until) {
-      node.status = 'healthy'; mutated = true;
-    }
-    return { ...node, mutated };
+  // 4. Hydrate Model Usage (Reset counters if time has passed)
+  const usageMap = new Map();
+  usages.forEach(u => {
+    let rpd = u.rpd_count;
+    let rpm = u.rpm_count;
+    if (u.rpd_date !== todayStr) rpd = 0;
+    if (now - u.rpm_window_start > 60000) rpm = 0;
+    usageMap.set(u.api_key_id, { rpd, rpm });
   });
 
-  // Filter available nodes & Sort by lowest usage
-  const availableNodes = hydratedKeys
-    .filter(k => k.status === 'healthy' && k.rpm_count < limits.rpm && k.rpd_count < limits.rpd)
-    .sort((a, b) => a.rpd_count !== b.rpd_count ? a.rpd_count - b.rpd_count : a.rpm_count - b.rpm_count);
+  // 5. Hydrate Keys and Lazy Evaluate status
+  const hydratedKeys = keys.map(key => {
+    let mutated = false;
+    // Check if key recovered from being 429 rate limited
+    if (key.status === 'cooling' && now > key.cooldown_until) {
+      key.status = 'healthy'; 
+      mutated = true;
+    }
+    
+    // Get this specific model's usage for this key
+    const modelStats = usageMap.get(key.id) || { rpd: 0, rpm: 0 };
 
-  if (availableNodes.length === 0) {
-    return NextResponse.json({ error: 'All gateway nodes exhausted or cooling' }, { status: 503 });
+    return { 
+      ...key, 
+      mutated, 
+      model_rpd: modelStats.rpd, 
+      model_rpm: modelStats.rpm 
+    };
+  });
+
+  // Filter keys by MODEL limits (not global limits) & Sort by lowest usage
+  const availableKeys = hydratedKeys
+    .filter(k => k.status === 'healthy' && k.model_rpm < limits.rpm && k.model_rpd < limits.rpd)
+    .sort((a, b) => a.model_rpd !== b.model_rpd ? a.model_rpd - b.model_rpd : a.model_rpm - b.model_rpm);
+
+  if (availableKeys.length === 0) {
+    return NextResponse.json({ error: `All API keys are exhausted or cooling for the model: ${modelName}` }, { status: 503 });
   }
 
   const payload = await req.text();
 
-  // 5. Gateway Traversal
-  for (const node of availableNodes) {
+  // 6. Gateway Traversal
+  for (const key of availableKeys) {
     try {
-      const targetUrl = `https://generativelanguage.googleapis.com/${urlPath}?key=${node.key_value}`;
+      const targetUrl = `https://generativelanguage.googleapis.com/${urlPath}?key=${key.key_value}`;
       
       const response = await fetch(targetUrl, {
         method: 'POST',
@@ -83,16 +101,17 @@ export async function POST(req: Request, { params }: { params: Promise<{ path: s
       });
 
       if (response.status === 429) {
-        await updateNodeState(node.id, { 
+        // If one model 429s, it's safe to cool the whole key temporarily
+        await updateKeyState(key.id, { 
           status: 'cooling', cooldown_until: now + 90000, 
-          total_errors: node.total_errors + 1, last_error: '429 Rate Limited' 
+          total_errors: key.total_errors + 1, last_error: `429 Rate Limited on model ${modelName}`
         });
-        continue; // Try next node
+        continue; // Try next key
       }
 
       if (response.status === 403) {
-        await updateNodeState(node.id, { 
-          status: 'dead', total_errors: node.total_errors + 1, last_error: 'API Key Invalid (403)' 
+        await updateKeyState(key.id, { 
+          status: 'dead', total_errors: key.total_errors + 1, last_error: 'API Key Invalid (403)' 
         });
         continue;
       }
@@ -102,43 +121,46 @@ export async function POST(req: Request, { params }: { params: Promise<{ path: s
         return NextResponse.json(errorData, { status: response.status });
       }
 
-      // Success! Update node and usage stats asynchronously
+      // Success! Update global key stats and exact model usage asynchronously
       const data = await response.json();
       
       Promise.all([
-        updateNodeState(node.id, {
-          rpd_count: node.rpd_count + 1,
-          rpm_count: node.rpm_count + 1,
-          total_requests: node.total_requests + 1,
+        updateKeyState(key.id, {
+          total_requests: key.total_requests + 1,
           last_used: now,
-          rpd_date: node.rpd_date,
-          rpm_window_start: node.rpm_window_start,
-          status: node.status // in case it recovered from cooling
+          status: key.status // in case it recovered from cooling
         }),
-        recordModelUsage(userId, modelName)
+        recordExactModelUsage(userId, key.id, modelName, key.model_rpd + 1, key.model_rpm + 1, todayStr, now)
       ]).catch(console.error);
 
       return NextResponse.json(data, { status: 200 });
 
     } catch (err: any) {
-      await updateNodeState(node.id, { total_errors: node.total_errors + 1, last_error: err.message });
+      await updateKeyState(key.id, { total_errors: key.total_errors + 1, last_error: err.message });
     }
   }
 
-  return NextResponse.json({ error: 'Gateway traversal failed' }, { status: 502 });
+  return NextResponse.json({ error: 'All available keys failed to process the request.' }, { status: 502 });
 }
 
 // Database Helpers
-async function updateNodeState(id: string, updates: any) {
+async function updateKeyState(id: string, updates: any) {
   await supabaseAdmin.from('api_keys').update(updates).eq('id', id);
 }
 
-async function recordModelUsage(userId: string, modelName: string) {
-  // Upsert pattern for model tracking
-  const { data } = await supabaseAdmin.from('model_usage').select('usage_count').eq('user_id', userId).eq('model_name', modelName).single();
+async function recordExactModelUsage(userId: string, apiKeyId: string, modelName: string, rpd: number, rpm: number, todayStr: string, now: number) {
+  const { data } = await supabaseAdmin.from('model_usage')
+    .select('id')
+    .eq('api_key_id', apiKeyId)
+    .eq('model_name', modelName)
+    .single();
+
   if (data) {
-    await supabaseAdmin.from('model_usage').update({ usage_count: data.usage_count + 1 }).eq('user_id', userId).eq('model_name', modelName);
+    await supabaseAdmin.from('model_usage')
+      .update({ rpd_count: rpd, rpm_count: rpm, rpd_date: todayStr, rpm_window_start: now })
+      .eq('id', data.id);
   } else {
-    await supabaseAdmin.from('model_usage').insert({ user_id: userId, model_name: modelName, usage_count: 1 });
+    await supabaseAdmin.from('model_usage')
+      .insert({ user_id: userId, api_key_id: apiKeyId, model_name: modelName, rpd_count: rpd, rpm_count: rpm, rpd_date: todayStr, rpm_window_start: now });
   }
 }

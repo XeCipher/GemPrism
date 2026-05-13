@@ -41,8 +41,15 @@ export const ALL_MODELS: Record<string, { name: string; rpm: number; rpd: number
 
 export function getModelLimits(modelId: string) {
   const normalized = modelId.toLowerCase();
+  let bestMatchKey: string | null = null;
+
   for (const key in ALL_MODELS) {
-    if (normalized.includes(key)) return ALL_MODELS[key];
+    if (normalized.includes(key)) {
+      if (!bestMatchKey || key.length > bestMatchKey.length) {
+        bestMatchKey = key;
+      }
+    }
   }
-  return ALL_MODELS["default"];
+
+  return bestMatchKey ? ALL_MODELS[bestMatchKey] : ALL_MODELS["default"];
 }

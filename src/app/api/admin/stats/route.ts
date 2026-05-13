@@ -14,37 +14,39 @@ export async function GET(req: Request) {
 
   const userId = userAuth.user.id;
 
-  // Fetch Token, Keys, and Usage
-  let [tokenReq, keysReq, usageReq] = await Promise.all([
+  // Fetch Token, Keys, and Model Usage
+  const [tokenReq, keysReq, usageReq] = await Promise.all([
     supabaseAdmin.from('gateway_tokens').select('token').eq('user_id', userId).single(),
+    // Removed the problematic .order() clause that causes silent DB failures if the column is missing
     supabaseAdmin.from('api_keys').select('*').eq('user_id', userId),
     supabaseAdmin.from('model_usage').select('*').eq('user_id', userId)
   ]);
 
-  // If user just signed up and verified email, they won't have a token yet. Generate it now!
+  // If user just signed up and verified email, they won't have a token yet. Generate it now.
   let userToken = tokenReq.data?.token;
   if (!userToken) {
     userToken = `gp_live_${Math.random().toString(36).substring(2, 10)}${Math.random().toString(36).substring(2, 10)}`;
     await supabaseAdmin.from('gateway_tokens').insert({ user_id: userId, token: userToken });
   }
 
-  const keys = keysReq.data ||[];
-  
-  // Format usage as a map { "gemini-2.5-flash": 120 }
-  const usageMap: Record<string, number> = {};
-  usageReq.data?.forEach(u => usageMap[u.model_name] = u.usage_count);
+  // Sort keys alphabetically by name in Javascript to bypass any missing DB schema columns
+  const keys = (keysReq.data ||[]).sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+  const modelUsage = usageReq.data ||[];
 
   return NextResponse.json({
     token: userToken,
-    keys: keys.map(k => ({ ...k, key_value: `•••${k.key_value.slice(-4)}` })), // mask key
+    // Mask key safely but leave enough to recognize if unnamed
+    keys: keys.map(k => ({ 
+      ...k, 
+      key_value: `${k.key_value.slice(0, 6)}••••••••${k.key_value.slice(-4)}` 
+    })),
     models: ALL_MODELS,
-    usage: usageMap,
+    usage: modelUsage,
     summary: {
-      total_requests: keys.reduce((acc, k) => acc + k.rpd_count, 0),
+      total_requests: keys.reduce((acc, k) => acc + (k.total_requests || 0), 0),
       active: keys.filter(k => k.status === 'healthy').length,
       cooling: keys.filter(k => k.status === 'cooling').length,
       dead: keys.filter(k => k.status === 'dead').length,
-      rpm_total: keys.reduce((acc, k) => acc + k.rpm_count, 0)
     }
   });
 }
