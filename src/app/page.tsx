@@ -13,7 +13,7 @@ export default function Dashboard() {
     if (!authOk) return;
     const fetchStats = async () => {
       const res = await fetch("/api/admin/stats", {
-        headers: { "X-Gateway-Token": token }
+        headers: { "x-goog-api-key": token }
       });
       if (res.ok) setData(await res.json());
       else if (res.status === 401) setAuthOk(false);
