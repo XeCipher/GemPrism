@@ -5,10 +5,11 @@ import { supabaseClient } from "@/lib/supabase";
 import {
   Activity, ShieldAlert, Zap, ServerCrash, Copy, Check,
   Database, Plus, LogOut, Trash2, RefreshCw, AlertCircle,
-  ChevronUp, Layers, KeyRound, TrendingUp,
+  ChevronUp, Layers, KeyRound, TrendingUp, Code as CodeIcon, ChevronDown
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
+import { CodeBlock } from "@/components/CodeBlock";
 
 // ─── Toast ───────────────────────────────────────────────────────────────────
 
@@ -50,8 +51,6 @@ function Skeleton({ className = "" }: { className?: string }) {
 }
 
 // ─── Progress Bar ─────────────────────────────────────────────────────────────
-// Note: when max === 999999 (unlimited), the bar intentionally renders empty
-// with an ∞ cap. A full bar for unlimited is misleading.
 
 function UsageBar({ value, max, label }: { value: number; max: number; label: string }) {
   const isUnlimited  = max === 999_999;
@@ -64,7 +63,6 @@ function UsageBar({ value, max, label }: { value: number; max: number; label: st
     pct   = 0;
     color = "bg-red-500/50";
   } else if (isUnlimited) {
-    // Keep the bar visually empty — a full bar implies exhaustion, not freedom
     pct   = 0;
     color = "bg-cyan-500";
   } else {
@@ -116,20 +114,6 @@ function StatusBadge({ status }: { status: string }) {
   );
 }
 
-// ─── Inline Usage Stat (for the keys table) ───────────────────────────────────
-// Simple number display — no bar, no limit comparison, just the raw count.
-
-function UsageStat({ label, value, accent = "text-emerald-400" }: { label: string; value: number; accent?: string }) {
-  return (
-    <div className="flex flex-col items-center gap-0.5">
-      <span className={`font-[family-name:var(--font-mono)] font-semibold text-sm tabular-nums ${accent}`}>
-        {value.toLocaleString()}
-      </span>
-      <span className="text-[10px] text-neutral-600 uppercase tracking-wider font-medium">{label}</span>
-    </div>
-  );
-}
-
 // ─── Main Component ───────────────────────────────────────────────────────────
 
 export default function Dashboard() {
@@ -153,16 +137,16 @@ export default function Dashboard() {
     const id = Math.random().toString(36).slice(2);
     setToasts(prev => [...prev, { id, message, type }]);
     setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 3500);
-  }, []);
+  },[]);
 
   const removeToast = useCallback((id: string) =>
-    setToasts(prev => prev.filter(t => t.id !== id)), []);
+    setToasts(prev => prev.filter(t => t.id !== id)),[]);
 
-  // ── Generate a random default key name on mount (avoids SSR mismatch) ─────
+  // ── Generate a random default key name on mount ────────────────────────────
 
   useEffect(() => {
     setNewKeyName(`Key-${Math.random().toString(36).slice(2, 6).toUpperCase()}`);
-  }, []);
+  },[]);
 
   // ── Fetch dashboard stats ──────────────────────────────────────────────────
 
@@ -179,7 +163,6 @@ export default function Dashboard() {
         const json = await res.json();
         setData(json);
 
-        // Auto-select the first key for the model telemetry view if none is chosen
         if (json.keys?.length > 0) {
           setActiveKeyId(prev =>
             prev && json.keys.some((k: any) => k.id === prev) ? prev : json.keys[0].id
@@ -243,7 +226,6 @@ export default function Dashboard() {
   // ── Delete key ─────────────────────────────────────────────────────────────
 
   const handleDeleteKey = async (keyId: string) => {
-    // First click: ask for confirmation. Second click within 3s: delete.
     if (confirmDelete !== keyId) {
       setConfirmDelete(keyId);
       setTimeout(() => setConfirmDelete(id => (id === keyId ? null : id)), 3000);
@@ -305,18 +287,13 @@ export default function Dashboard() {
 
   // ── Derived data ───────────────────────────────────────────────────────────
 
-  const STATS = [
+  const STATS =[
     { label: "Total Requests", value: data.summary.total_requests, icon: Activity,    color: "text-emerald-400" },
     { label: "Active Keys",    value: data.summary.active,         icon: Zap,         color: "text-emerald-400" },
     { label: "Cooling Keys",   value: data.summary.cooling,        icon: ShieldAlert, color: "text-amber-400"   },
     { label: "Dead Keys",      value: data.summary.dead,           icon: ServerCrash, color: "text-red-400"     },
   ];
 
-  /**
-   * Returns the hydrated RPD and RPM for a given key+model combo.
-   * Mirrors the server-side reset logic: stale dates → 0, expired minute windows → 0.
-   * Used in the model telemetry table.
-   */
   const getUsageForActiveKey = (modelName: string) => {
     if (!activeKeyId) return { rpm: 0, rpd: 0 };
 
@@ -334,16 +311,11 @@ export default function Dashboard() {
     return { rpm, rpd };
   };
 
-  /**
-   * Returns the total RPD (today) and RPM (last 60s) for a given api_key,
-   * summed across all models that key was used for.
-   * Shown in the API keys pool table as plain numbers — no limit comparison.
-   */
   const getKeyTotals = (keyId: string): { rpd: number; rpm: number } => {
     const now      = Date.now();
     const todayStr = new Date().toISOString().split('T')[0];
 
-    const keyUsages = (data.usage || []).filter((u: any) => u.api_key_id === keyId);
+    const keyUsages = (data.usage ||[]).filter((u: any) => u.api_key_id === keyId);
 
     return keyUsages.reduce(
       (acc: { rpd: number; rpm: number }, u: any) => {
@@ -355,6 +327,47 @@ export default function Dashboard() {
     );
   };
 
+  // Dynamically sort models for the table based on availability and usage volume
+  const sortedModels = Object.entries(data.models)
+    .filter(([id]) => id !== "default")
+    .map(([id, details]: [string, any]) => {
+      const usage = getUsageForActiveKey(id);
+      const isWaitlisted = details.rpd === 0;
+      return { id, details, usage, isWaitlisted };
+    })
+    .sort((a, b) => {
+      // 1. Available models above waitlisted
+      if (a.isWaitlisted && !b.isWaitlisted) return 1;
+      if (!a.isWaitlisted && b.isWaitlisted) return -1;
+      
+      // 2. Highest daily requests first
+      if (b.usage.rpd !== a.usage.rpd) return b.usage.rpd - a.usage.rpd;
+      
+      // 3. Highest requests per minute first
+      if (b.usage.rpm !== a.usage.rpm) return b.usage.rpm - a.usage.rpm;
+      
+      // 4. Alphabetical fallback
+      return a.details.name.localeCompare(b.details.name);
+    });
+
+  // Dynamically build the SDK code with the user's specific access token
+  const integrationCode = `import { GoogleGenAI } from "@google/genai";
+
+// ① Use your GemPrism Gateway Token as the API key
+// ② Point baseUrl at your GemPrism instance
+const ai = new GoogleGenAI({
+  apiKey: "${data.token}",
+  baseUrl: "https://${typeof window !== "undefined" ? window.location.host : "gemprism.vercel.app"}/api/proxy",
+});
+
+// No other changes needed — full SDK compatibility
+const response = await ai.models.generateContent({
+  model: "gemini-2.5-flash",
+  contents: "Explain quantum entanglement in one sentence.",
+});
+
+console.log(response.text);`;
+
   // ── Render ─────────────────────────────────────────────────────────────────
 
   return (
@@ -365,9 +378,10 @@ export default function Dashboard() {
       <header className="mb-8 md:mb-10 flex flex-wrap items-center justify-between gap-4">
         <Link href="/" className="flex items-center gap-2.5 text-white font-semibold text-lg">
           <Layers className="text-emerald-500" size={22} />
-          <span className="hidden sm:inline">GemPrism</span>
+          <span>GemPrism</span> {/* Retained on Mobile */}
           <span className="hidden sm:inline text-neutral-600 font-normal text-sm">/</span>
-          <span className="text-neutral-400 text-sm font-normal truncate max-w-[150px] sm:max-w-none">
+          {/* Email dynamically hidden on mobile */}
+          <span className="hidden sm:inline text-neutral-400 text-sm font-normal truncate max-w-[150px] sm:max-w-none">
             {session?.user?.email}
           </span>
         </Link>
@@ -392,25 +406,43 @@ export default function Dashboard() {
         </div>
       </header>
 
-      {/* ── Gateway Token ── */}
-      <div className="bg-[#0a0a0a] border border-emerald-500/20 rounded-2xl p-5 sm:p-6 mb-8 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-xl">
-        <div>
-          <h3 className="text-emerald-400 font-semibold text-base mb-1">Your Gateway Token</h3>
-          <p className="text-neutral-500 text-xs sm:text-sm">
-            Use this as your API key in the Google GenAI SDK.
-          </p>
+      {/* ── Gateway Token & Integration Section ── */}
+      <div className="mb-8">
+        <div className="bg-[#0a0a0a] border border-emerald-500/20 rounded-2xl p-5 sm:p-6 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-xl">
+          <div>
+            <h3 className="text-emerald-400 font-semibold text-base mb-1">Your Gateway Token</h3>
+            <p className="text-neutral-500 text-xs sm:text-sm">
+              Use this as your API key in the Google GenAI SDK.
+            </p>
+          </div>
+          <button
+            onClick={() => handleCopy(data.token)}
+            className="flex items-center gap-2.5 bg-[#0f0f0f] border border-neutral-800 hover:border-emerald-500/40 px-4 py-3 rounded-xl text-white text-sm transition-all group w-full sm:w-auto justify-between"
+          >
+            <code className="text-emerald-300 font-[family-name:var(--font-mono)] text-xs sm:text-sm truncate w-full sm:max-w-[280px]">
+              {data.token}
+            </code>
+            {copiedId === data.token
+              ? <Check size={16} className="text-emerald-400 shrink-0" />
+              : <Copy size={16} className="text-neutral-500 group-hover:text-white shrink-0 transition-colors" />}
+          </button>
         </div>
-        <button
-          onClick={() => handleCopy(data.token)}
-          className="flex items-center gap-2.5 bg-[#0f0f0f] border border-neutral-800 hover:border-emerald-500/40 px-4 py-3 rounded-xl text-white text-sm transition-all group w-full sm:w-auto justify-between"
-        >
-          <code className="text-emerald-300 font-[family-name:var(--font-mono)] text-xs sm:text-sm truncate w-full sm:max-w-[280px]">
-            {data.token}
-          </code>
-          {copiedId === data.token
-            ? <Check size={16} className="text-emerald-400 shrink-0" />
-            : <Copy size={16} className="text-neutral-500 group-hover:text-white shrink-0 transition-colors" />}
-        </button>
+
+        {/* Dynamic Integration Snippet */}
+        <div className="mt-4">
+          <details className="group bg-[#0a0a0a] border border-neutral-800 rounded-2xl overflow-hidden shadow-lg transition-all open:ring-1 open:ring-emerald-500/20">
+            <summary className="flex items-center justify-between px-5 py-4 cursor-pointer select-none hover:bg-[#0d0d0d] transition-colors">
+              <div className="flex items-center gap-2.5">
+                <CodeIcon size={18} className="text-emerald-400" />
+                <span className="font-semibold text-sm text-white">Show Integration Code</span>
+              </div>
+              <ChevronDown size={18} className="text-neutral-500 group-open:rotate-180 transition-transform duration-300" />
+            </summary>
+            <div className="p-4 sm:p-6 border-t border-neutral-800 bg-[#050505]">
+              <CodeBlock code={integrationCode} />
+            </div>
+          </details>
+        </div>
       </div>
 
       {/* ── Stat Cards ── */}
@@ -493,8 +525,6 @@ export default function Dashboard() {
                   <tr className="bg-[#0d0d0d] border-b border-neutral-800 text-neutral-500 text-xs uppercase tracking-wider font-semibold">
                     <th className="px-5 py-4 font-normal">Name & Key</th>
                     <th className="px-5 py-4 font-normal">Status</th>
-                    {/* RPD = total requests today across all models for this key
-                        RPM = requests in the last 60 seconds                */}
                     <th className="px-5 py-4 font-normal text-center">RPD today</th>
                     <th className="px-5 py-4 font-normal text-center">RPM now</th>
                     <th className="px-5 py-4 font-normal text-right">All-time</th>
@@ -518,21 +548,18 @@ export default function Dashboard() {
                           <StatusBadge status={k.status} />
                         </td>
 
-                        {/* Requests today (resets at midnight UTC) */}
                         <td className="px-5 py-4 text-center">
                           <span className={`font-[family-name:var(--font-mono)] font-semibold text-sm tabular-nums ${totals.rpd > 0 ? "text-emerald-400" : "text-neutral-600"}`}>
                             {totals.rpd.toLocaleString()}
                           </span>
                         </td>
 
-                        {/* Requests in the last 60 seconds */}
                         <td className="px-5 py-4 text-center">
                           <span className={`font-[family-name:var(--font-mono)] font-semibold text-sm tabular-nums ${totals.rpm > 0 ? "text-cyan-400" : "text-neutral-600"}`}>
                             {totals.rpm.toLocaleString()}
                           </span>
                         </td>
 
-                        {/* All-time total requests */}
                         <td className="px-5 py-4 text-right">
                           <span className="text-neutral-300 font-[family-name:var(--font-mono)] font-semibold text-sm">
                             {(k.total_requests || 0).toLocaleString()}
@@ -592,7 +619,6 @@ export default function Dashboard() {
                       <StatusBadge status={k.status} />
                     </div>
 
-                    {/* Four-cell stats grid: RPD, RPM, All-time, Errors */}
                     <div className="grid grid-cols-4 gap-2 bg-[#0d0d0d] p-3 rounded-lg border border-neutral-800/50">
                       <div className="flex flex-col items-center gap-0.5">
                         <span className={`font-[family-name:var(--font-mono)] font-semibold text-sm tabular-nums ${totals.rpd > 0 ? "text-emerald-400" : "text-neutral-600"}`}>
@@ -672,7 +698,6 @@ export default function Dashboard() {
             </p>
           </div>
 
-          {/* Key selector */}
           <div className="flex flex-col gap-1.5 w-full md:w-auto">
             <label className="text-[11px] font-semibold tracking-wider uppercase text-neutral-500">
               Track specific key
@@ -708,75 +733,63 @@ export default function Dashboard() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-neutral-800/50">
-                {Object.entries(data.models)
-                  .filter(([id]) => id !== "default")
-                  .map(([id, details]: [string, any]) => {
-                    const usage        = getUsageForActiveKey(id);
-                    const isWaitlisted = details.rpd === 0;
-                    return (
-                      <tr
-                        key={id}
-                        className={`hover:bg-[#0d0d0d] transition-colors ${isWaitlisted ? "opacity-50 grayscale" : ""}`}
+                {sortedModels.map(({ id, details, usage, isWaitlisted }) => (
+                  <tr
+                    key={id}
+                    className={`hover:bg-[#0d0d0d] transition-colors ${isWaitlisted ? "opacity-50 grayscale" : ""}`}
+                  >
+                    <td className="px-5 py-4 font-medium text-white text-sm whitespace-nowrap">
+                      {details.name}
+                    </td>
+                    <td className="px-5 py-4">
+                      <button
+                        onClick={() => handleCopy(id)}
+                        className="flex items-center gap-2 bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 px-3 py-1.5 rounded-lg text-neutral-400 hover:text-white text-xs transition-colors font-[family-name:var(--font-mono)]"
+                        title="Copy API identifier"
                       >
-                        <td className="px-5 py-4 font-medium text-white text-sm whitespace-nowrap">
-                          {details.name}
-                        </td>
-                        <td className="px-5 py-4">
-                          <button
-                            onClick={() => handleCopy(id)}
-                            className="flex items-center gap-2 bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 px-3 py-1.5 rounded-lg text-neutral-400 hover:text-white text-xs transition-colors font-[family-name:var(--font-mono)]"
-                            title="Copy API identifier"
-                          >
-                            {id}
-                            {copiedId === id
-                              ? <Check size={12} className="text-emerald-400 shrink-0" />
-                              : <Copy size={12} className="shrink-0" />}
-                          </button>
-                        </td>
-                        <td className="px-5 py-4 align-middle">
-                          <UsageBar value={usage.rpm} max={details.rpm} label="RPM" />
-                        </td>
-                        <td className="px-5 py-4 align-middle">
-                          <UsageBar value={usage.rpd} max={details.rpd} label="RPD" />
-                        </td>
-                      </tr>
-                    );
-                  })}
+                        {id}
+                        {copiedId === id
+                          ? <Check size={12} className="text-emerald-400 shrink-0" />
+                          : <Copy size={12} className="shrink-0" />}
+                      </button>
+                    </td>
+                    <td className="px-5 py-4 align-middle">
+                      <UsageBar value={usage.rpm} max={details.rpm} label="RPM" />
+                    </td>
+                    <td className="px-5 py-4 align-middle">
+                      <UsageBar value={usage.rpd} max={details.rpd} label="RPD" />
+                    </td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>
 
           {/* Mobile Card View for Models */}
           <div className="md:hidden flex flex-col divide-y divide-neutral-800/60">
-            {Object.entries(data.models)
-              .filter(([id]) => id !== "default")
-              .map(([id, details]: [string, any]) => {
-                const usage        = getUsageForActiveKey(id);
-                const isWaitlisted = details.rpd === 0;
-                return (
-                  <div
-                    key={id}
-                    className={`p-4 flex flex-col gap-4 ${isWaitlisted ? "opacity-50 grayscale" : ""}`}
+            {sortedModels.map(({ id, details, usage, isWaitlisted }) => (
+              <div
+                key={id}
+                className={`p-4 flex flex-col gap-4 ${isWaitlisted ? "opacity-50 grayscale" : ""}`}
+              >
+                <div className="flex items-center justify-between">
+                  <span className="font-semibold text-white text-sm">{details.name}</span>
+                  <button
+                    onClick={() => handleCopy(id)}
+                    className="flex items-center gap-1.5 bg-neutral-900 border border-neutral-800 px-2 py-1 rounded-md text-neutral-400 text-[10px] font-[family-name:var(--font-mono)]"
                   >
-                    <div className="flex items-center justify-between">
-                      <span className="font-semibold text-white text-sm">{details.name}</span>
-                      <button
-                        onClick={() => handleCopy(id)}
-                        className="flex items-center gap-1.5 bg-neutral-900 border border-neutral-800 px-2 py-1 rounded-md text-neutral-400 text-[10px] font-[family-name:var(--font-mono)]"
-                      >
-                        {id}{" "}
-                        {copiedId === id
-                          ? <Check size={10} className="text-emerald-400" />
-                          : <Copy size={10} />}
-                      </button>
-                    </div>
-                    <div className="grid grid-cols-2 gap-4 bg-[#0d0d0d] p-3 rounded-xl border border-neutral-800/50">
-                      <UsageBar value={usage.rpm} max={details.rpm} label="REQ / MIN" />
-                      <UsageBar value={usage.rpd} max={details.rpd} label="REQ / DAY" />
-                    </div>
-                  </div>
-                );
-              })}
+                    {id}{" "}
+                    {copiedId === id
+                      ? <Check size={10} className="text-emerald-400" />
+                      : <Copy size={10} />}
+                  </button>
+                </div>
+                <div className="grid grid-cols-2 gap-4 bg-[#0d0d0d] p-3 rounded-xl border border-neutral-800/50">
+                  <UsageBar value={usage.rpm} max={details.rpm} label="REQ / MIN" />
+                  <UsageBar value={usage.rpd} max={details.rpd} label="REQ / DAY" />
+                </div>
+              </div>
+            ))}
           </div>
         </div>
       </div>

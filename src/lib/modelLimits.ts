@@ -1,3 +1,16 @@
+export const MODEL_ALIASES: Record<string, string> = {
+  "gemini-flash-latest": "gemini-3-flash",
+  "gemini-flash-lite-latest": "gemini-3.1-flash-lite",
+  "gemini-pro-latest": "gemini-3.1-pro",
+  "gemini-1.5-flash-latest": "gemini-1.5-flash",
+  "gemini-1.5-pro-latest": "gemini-1.5-pro",
+  "gemini-2.0-flash-latest": "gemini-2-flash",
+  "gemini-2.5-flash-latest": "gemini-2.5-flash",
+  "gemini-2.5-pro-latest": "gemini-2.5-pro",
+  "gemini-3.0-flash-latest": "gemini-3-flash",
+  "text-embedding-004": "gemini-embedding-1"
+};
+
 export const ALL_MODELS: Record<string, { name: string; rpm: number; rpd: number }> = {
   "gemini-embedding-1": { name: "Gemini Embedding 1", rpm: 100, rpd: 1000 },
   "gemini-3-flash": { name: "Gemini 3 Flash", rpm: 5, rpd: 20 },
@@ -41,8 +54,15 @@ export const ALL_MODELS: Record<string, { name: string; rpm: number; rpd: number
 
 export function getModelLimits(modelId: string) {
   const normalized = modelId.toLowerCase();
-  let bestMatchKey: string | null = null;
 
+  // 1. Explicit Alias Checking
+  if (MODEL_ALIASES[normalized]) {
+    const canonicalId = MODEL_ALIASES[normalized];
+    return { id: canonicalId, ...ALL_MODELS[canonicalId] };
+  }
+
+  // 2. Substring Fallback Matching
+  let bestMatchKey: string | null = null;
   for (const key in ALL_MODELS) {
     if (normalized.includes(key)) {
       if (!bestMatchKey || key.length > bestMatchKey.length) {
@@ -51,5 +71,21 @@ export function getModelLimits(modelId: string) {
     }
   }
 
-  return bestMatchKey ? ALL_MODELS[bestMatchKey] : ALL_MODELS["default"];
+  // Auto-strip trailing "-latest" if an explicit mapped alias wasn't found
+  if (!bestMatchKey && normalized.endsWith("-latest")) {
+    const stripped = normalized.replace("-latest", "");
+    for (const key in ALL_MODELS) {
+      if (stripped.includes(key)) {
+        if (!bestMatchKey || key.length > bestMatchKey.length) {
+          bestMatchKey = key;
+        }
+      }
+    }
+  }
+
+  if (bestMatchKey) {
+    return { id: bestMatchKey, ...ALL_MODELS[bestMatchKey] };
+  }
+
+  return { id: "default", ...ALL_MODELS["default"] };
 }

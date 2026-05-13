@@ -27,12 +27,15 @@ export async function POST(req: Request, { params }: { params: Promise<{ path: s
   const resolvedParams = await params;
   const urlPath = resolvedParams.path.join('/');
 
-  let modelName = 'default';
+  let requestedModel = 'default';
   const modelMatch = urlPath.match(/models\/([^:]+)/);
-  if (modelMatch) modelName = modelMatch[1];
+  if (modelMatch) requestedModel = modelMatch[1];
 
-  const limits = getModelLimits(modelName);
-  if (limits.rpd === 0) {
+  // Resolve Canonical Model Name for accurate tracking & limits
+  const modelLimits = getModelLimits(requestedModel);
+  const modelName = modelLimits.id; 
+
+  if (modelLimits.rpd === 0) {
     return NextResponse.json(
       { error: `Model ${modelName} is waitlisted or unavailable.` },
       { status: 403 }
@@ -49,8 +52,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ path: s
       .eq('model_name', modelName),
   ]);
 
-  const keys   = keysReq.data  || [];
-  const usages = usageReq.data || [];
+  const keys   = keysReq.data  ||[];
+  const usages = usageReq.data ||[];
 
   if (keys.length === 0) {
     return NextResponse.json(
@@ -86,7 +89,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ path: s
 
   // Sort healthy keys by lowest usage first (least-loaded routing)
   const availableKeys = hydratedKeys
-    .filter(k => k.status === 'healthy' && k.model_rpm < limits.rpm && k.model_rpd < limits.rpd)
+    .filter(k => k.status === 'healthy' && k.model_rpm < modelLimits.rpm && k.model_rpd < modelLimits.rpd)
     .sort((a, b) =>
       a.model_rpd !== b.model_rpd ? a.model_rpd - b.model_rpd : a.model_rpm - b.model_rpm
     );
@@ -103,6 +106,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ path: s
   // 6. Gateway traversal — try keys in order, skipping on rate-limit or auth errors
   for (const key of availableKeys) {
     try {
+      // NOTE: We pass the exact urlPath upstream so aliases like gemini-flash-latest still work natively on Google
       const targetUrl = `https://generativelanguage.googleapis.com/${urlPath}?key=${key.key_value}`;
 
       const response = await fetch(targetUrl, {
@@ -135,24 +139,18 @@ export async function POST(req: Request, { params }: { params: Promise<{ path: s
         return NextResponse.json(errorData, { status: response.status });
       }
 
-      // Parse the successful Gemini response body first, then commit the
-      // DB writes before returning. This is the critical fix: in the Edge
-      // Runtime, any unawaited Promise after NextResponse.json() is returned
-      // is silently killed by the runtime before it can finish — which is
-      // exactly why model_usage was staying empty.
       const data = await response.json();
 
       await Promise.all([
         updateKeyState(key.id, {
           total_requests: (key.total_requests || 0) + 1,
           last_used:      now,
-          // Persist the recovered-from-cooling status back to the DB
           ...(key.mutated ? { status: 'healthy' } : {}),
         }),
         recordModelUsage(
           userId,
           key.id,
-          modelName,
+          modelName, // We record usage under the clean canonical modelName
           key.model_rpd + 1,
           key.model_rpm + 1,
           todayStr,
@@ -185,11 +183,6 @@ async function updateKeyState(id: string, updates: Record<string, unknown>) {
   }
 }
 
-/**
- * Upserts per-key, per-model usage counters.
- * Relies on the unique constraint on (api_key_id, model_name) added in the
- * SQL migration. If that constraint is missing, run the migration first.
- */
 async function recordModelUsage(
   userId:    string,
   apiKeyId:  string,
@@ -212,7 +205,6 @@ async function recordModelUsage(
     { onConflict: 'api_key_id,model_name' }
   );
 
-  // Log failures explicitly — previously these were swallowed with no trace
   if (error) {
     console.error('[GemPrism] recordModelUsage failed:', error.message, error.details);
   }

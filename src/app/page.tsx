@@ -1,11 +1,11 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import React, { useState, useEffect } from "react";
 import Link from "next/link";
 import {
-  Activity, Zap, Shield, ArrowRight, Layers,
-  Copy, Check, ChevronRight,
+  Activity, Zap, Shield, ArrowRight, ArrowDown, Layers, ChevronRight,
 } from "lucide-react";
+import { CodeBlock } from "@/components/CodeBlock";
 
 /* ─── Custom GitHub Icon ─── */
 function CustomGithubIcon({ size = 24, className = "" }: { size?: number; className?: string }) {
@@ -41,7 +41,7 @@ const FEATURES =[
   },
 ];
 
-const STEPS =[
+const STEPS = [
   "Create a free account and add your Gemini API keys.",
   "Receive a single secure Gateway Token for your project.",
   "Point the Google GenAI SDK's baseUrl at GemPrism.",
@@ -64,27 +64,6 @@ const response = await ai.models.generateContent({
 });
 
 console.log(response.text);`;
-
-/* ─── Syntax Highlighter ─── */
-function HighlightedLine({ line }: { line: string }) {
-  if (line.trim().startsWith("//") || line.trim().startsWith("# ")) {
-    return <span className="text-neutral-500 italic">{line}</span>;
-  }
-  const keyword = /\b(import|from|const|await|new|return|async|function)\b/g;
-  const string  = /("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`)/g;
-  const prop    = /\b(baseUrl|apiKey|model|contents)\b/g;
-
-  let result = line
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
-
-  result = result.replace(string,  (m) => `<em class="not-italic text-amber-300">${m}</em>`);
-  result = result.replace(keyword, (m) => `<strong class="font-normal text-emerald-400">${m}</strong>`);
-  result = result.replace(prop,    (m) => `<span class="text-cyan-400">${m}</span>`);
-
-  return <span dangerouslySetInnerHTML={{ __html: result }} />;
-}
 
 /* ─── Animated Key-Node Grid ─── */
 function ApiKeyGrid() {
@@ -127,8 +106,8 @@ function ApiKeyGrid() {
   };
 
   return (
-    <div className="relative rounded-2xl border border-neutral-800 bg-[#070707] p-6 w-full max-w-sm mx-auto shadow-2xl">
-      <div className="flex items-center justify-between mb-5 font-[family-name:var(--font-mono)] text-xs font-semibold">
+    <div className="relative rounded-2xl border border-neutral-800 bg-[#070707] p-5 sm:p-6 w-full max-w-sm mx-auto shadow-2xl">
+      <div className="flex items-center justify-between mb-5 font-[family-name:var(--font-mono)] text-[11px] sm:text-xs font-semibold">
         <span className="text-neutral-500">API KEY POOL</span>
         <span className="flex items-center gap-1.5 text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-full border border-emerald-500/20">
           <span className="relative flex h-1.5 w-1.5">
@@ -139,23 +118,23 @@ function ApiKeyGrid() {
         </span>
       </div>
 
-      <div className="grid grid-cols-6 gap-3">
+      <div className="grid grid-cols-6 gap-2 sm:gap-3">
         {keys.map(k => (
           <div key={k.id} className="flex flex-col items-center gap-1.5 group cursor-default">
             <div
-              className={`w-6 h-6 sm:w-5 sm:h-5 rounded-md sm:rounded-sm transition-all duration-500 ${color[k.status]} ${
+              className={`w-5 h-5 sm:w-6 sm:h-6 rounded-sm sm:rounded-md transition-all duration-500 ${color[k.status]} ${
                 k.status === "healthy" ? "animate-pulse" : ""
               }`}
             />
-            <span className="text-[10px] text-neutral-600 group-hover:text-neutral-400 transition-colors font-[family-name:var(--font-mono)] font-medium">
+            <span className="text-[9px] sm:text-[10px] text-neutral-600 group-hover:text-neutral-400 transition-colors font-[family-name:var(--font-mono)] font-medium">
               {k.rpm}
             </span>
           </div>
         ))}
       </div>
 
-      <div className="mt-6 pt-4 border-t border-neutral-800/60 flex items-center justify-between font-[family-name:var(--font-mono)] text-[10px] sm:text-xs font-medium text-neutral-500">
-        {(["healthy","cooling","dead"] as KeyStatus[]).map(s => (
+      <div className="mt-6 pt-4 border-t border-neutral-800/60 flex flex-wrap items-center justify-between font-[family-name:var(--font-mono)] text-[9px] sm:text-[10px] md:text-xs font-medium text-neutral-500 gap-2">
+        {(["healthy", "cooling", "dead"] as KeyStatus[]).map(s => (
           <span key={s} className="flex items-center gap-1.5">
             <span className={`w-2 h-2 rounded-sm ${color[s].split(" ")[0]}`} />
             {s.toUpperCase()}:&nbsp;{keys.filter(k => k.status === s).length}
@@ -168,14 +147,6 @@ function ApiKeyGrid() {
 
 /* ─── Main Component ─── */
 export default function LandingPage() {
-  const [copied, setCopied] = useState(false);
-
-  const copy = async () => {
-    await navigator.clipboard.writeText(CODE).catch(() => {});
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  };
-
   return (
     <div className="min-h-screen bg-[#030303] bg-grid text-neutral-300 overflow-x-hidden selection:bg-emerald-500/25">
 
@@ -218,7 +189,7 @@ export default function LandingPage() {
         <div className="grid lg:grid-cols-2 gap-12 lg:gap-16 items-center">
 
           {/* left */}
-          <div className="opacity-0 animate-fade-up text-center lg:text-left flex flex-col items-center lg:items-start" style={{ animationDelay: "0ms", animationFillMode: "forwards" }}>
+          <div className="opacity-0 animate-fade-up text-center lg:text-left flex flex-col items-center lg:items-start min-w-0" style={{ animationDelay: "0ms", animationFillMode: "forwards" }}>
             <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-emerald-500/10 border border-emerald-500/25 text-emerald-400 text-[11px] sm:text-xs font-bold tracking-widest uppercase mb-6 sm:mb-8">
               <span className="relative flex h-2 w-2">
                 <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
@@ -269,7 +240,7 @@ export default function LandingPage() {
 
           {/* right — live grid */}
           <div
-            className="opacity-0 animate-fade-up flex justify-center lg:justify-end w-full"
+            className="opacity-0 animate-fade-up flex justify-center lg:justify-end w-full min-w-0"
             style={{ animationDelay: "150ms", animationFillMode: "forwards" }}
           >
             <ApiKeyGrid />
@@ -311,7 +282,7 @@ export default function LandingPage() {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 grid lg:grid-cols-2 gap-12 lg:gap-16 items-center lg:items-start">
 
           {/* steps */}
-          <div className="order-2 lg:order-1">
+          <div className="order-2 lg:order-1 min-w-0">
             <p className="text-xs font-bold tracking-widest text-emerald-500 uppercase mb-3">
               Drop-in integration
             </p>
@@ -346,75 +317,45 @@ export default function LandingPage() {
           </div>
 
           {/* code block */}
-          <div className="relative order-1 lg:order-2 w-full max-w-full">
-            <div className="absolute inset-0 -m-4 sm:-m-8 bg-gradient-to-tr from-emerald-500/10 to-cyan-500/10 blur-3xl rounded-full pointer-events-none" />
-            <div className="relative bg-[#070707] border border-neutral-800 rounded-2xl sm:rounded-3xl overflow-hidden shadow-2xl w-full">
-              {/* titlebar */}
-              <div className="flex items-center justify-between px-4 sm:px-5 py-3.5 bg-[#0a0a0a] border-b border-neutral-800">
-                <div className="flex items-center gap-3">
-                  <div className="flex gap-1.5">
-                    <div className="w-3 h-3 rounded-full bg-red-500/80" />
-                    <div className="w-3 h-3 rounded-full bg-amber-500/80" />
-                    <div className="w-3 h-3 rounded-full bg-emerald-500/80" />
-                  </div>
-                  <span className="text-xs text-neutral-500 font-[family-name:var(--font-mono)] font-medium">app.ts</span>
-                </div>
-                <button
-                  onClick={copy}
-                  className="flex items-center gap-1.5 text-xs font-semibold text-neutral-500 hover:text-white transition-colors bg-neutral-900/50 hover:bg-neutral-800 px-2 py-1 rounded"
-                >
-                  {copied
-                    ? <><Check size={13} className="text-emerald-400" /><span className="text-emerald-400">Copied</span></>
-                    : <><Copy size={13} /><span>Copy</span></>}
-                </button>
-              </div>
-
-              {/* code */}
-              <div className="p-4 sm:p-6 overflow-x-auto w-full">
-                <pre className="text-[11px] sm:text-xs md:text-sm leading-loose font-[family-name:var(--font-mono)] w-max min-w-full">
-                  {CODE.split("\n").map((line, i) => (
-                    <div key={i} className="flex gap-4">
-                      <span className="text-neutral-700 select-none w-4 sm:w-6 text-right shrink-0">{i + 1}</span>
-                      <HighlightedLine line={line} />
-                    </div>
-                  ))}
-                </pre>
-              </div>
-            </div>
+          <div className="relative order-1 lg:order-2 w-full max-w-full min-w-0">
+            <div className="absolute -inset-4 sm:-inset-8 bg-gradient-to-tr from-emerald-500/10 to-cyan-500/10 blur-3xl rounded-full pointer-events-none" />
+            <CodeBlock code={CODE} />
           </div>
         </div>
       </section>
 
       {/* ── Request Flow Diagram ── */}
       <section className="border-t border-neutral-800/50 py-20 bg-[#050505]">
-        <div className="max-w-4xl mx-auto px-4 sm:px-6 text-center">
+        <div className="max-w-5xl mx-auto px-4 sm:px-6 text-center">
           <p className="text-xs font-bold tracking-widest text-emerald-500 uppercase mb-3">
             Architecture
           </p>
           <h2 className="text-3xl sm:text-4xl font-bold text-white mb-12 lg:mb-16 tracking-tight">Request flow</h2>
 
-          <div className="flex flex-col lg:flex-row items-center justify-center gap-3 lg:gap-0">
+          {/* Flowchart container (Responsive Flex/Grid logic to ensure it doesn't break UI on mobile) */}
+          <div className="flex flex-col lg:flex-row items-center justify-center gap-0">
             {[
               { label: "Your App",        sub: "Any GenAI SDK",          color: "border-neutral-700  bg-[#0a0a0a]" },
               { label: "GemPrism",        sub: "Edge Proxy",             color: "border-emerald-500/40 bg-emerald-500/10 text-emerald-400 shadow-[0_0_20px_rgba(16,185,129,0.1)]" },
               { label: "Key Pool",        sub: "Your API Keys",          color: "border-neutral-700  bg-[#0a0a0a]" },
               { label: "Google AI",       sub: "Gen Language API",       color: "border-neutral-700  bg-[#0a0a0a]" },
             ].map((box, i, arr) => (
-              <div key={i} className="flex flex-col lg:flex-row items-center">
-                <div className={`border rounded-2xl px-6 py-5 text-center min-w-[160px] ${box.color}`}>
+              <React.Fragment key={i}>
+                <div className={`border rounded-2xl px-6 py-5 text-center w-full max-w-[220px] sm:w-auto sm:min-w-[160px] ${box.color}`}>
                   <div className={`font-bold text-sm sm:text-base ${box.color.includes("emerald") ? "text-emerald-300" : "text-white"}`}>
                     {box.label}
                   </div>
                   <div className="text-neutral-500 text-xs sm:text-sm mt-1.5 font-medium">{box.sub}</div>
                 </div>
+
                 {i < arr.length - 1 && (
-                  <div className="flex items-center justify-center py-2 lg:py-0 px-2 lg:px-4">
-                    <div className="h-6 w-px lg:h-px lg:w-8 bg-neutral-700" />
-                    <ArrowRight size={16} className="text-neutral-500 hidden lg:block -ml-1.5" />
-                    <ChevronRight size={16} className="text-neutral-500 lg:hidden -mt-1.5 rotate-90" />
+                  <div className="flex flex-col lg:flex-row items-center justify-center h-8 lg:h-auto w-auto lg:w-10 text-neutral-500">
+                    <div className="h-full lg:h-px w-px lg:w-full bg-neutral-700" />
+                    <ArrowDown size={16} className="lg:hidden -mt-1.5 shrink-0" />
+                    <ArrowRight size={16} className="hidden lg:block -ml-1.5 shrink-0" />
                   </div>
                 )}
-              </div>
+              </React.Fragment>
             ))}
           </div>
 
