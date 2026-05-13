@@ -45,9 +45,11 @@ export default function Login() {
     setError("");
 
     if (isSignUp) {
-      const { error } = await supabaseClient.auth.signUp({ email, password });
+      const { data, error } = await supabaseClient.auth.signUp({ email, password });
+      
       if (error) {
         setError(error.message);
+      } else if (data?.session) {
       } else {
         setCheckEmail(true);
       }
