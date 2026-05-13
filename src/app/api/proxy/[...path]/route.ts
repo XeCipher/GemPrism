@@ -135,7 +135,8 @@ export async function handler(req: Request, { params }: { params: Promise<{ path
       // Construct exact target URL including ALL original SDK query parameters
       const targetUrlObj = new URL(`https://generativelanguage.googleapis.com/${urlPath}`);
       reqUrl.searchParams.forEach((val, pKey) => {
-        if (pKey.toLowerCase() !== 'key') {
+        const lowerKey = pKey.toLowerCase();
+        if (!['key', 'path', 'nxtp', 'nxtppath'].includes(lowerKey)) {
           targetUrlObj.searchParams.append(pKey, val);
         }
       });
