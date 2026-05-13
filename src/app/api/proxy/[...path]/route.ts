@@ -4,14 +4,19 @@ import { getModelLimits } from '@/lib/modelLimits';
 
 export const runtime = 'edge';
 
-export async function POST(req: Request, { params }: { params: { path: string[] } }) {
+export async function POST(
+  req: Request, 
+  { params }: { params: Promise<{ path: string[] }> } // <-- Fixed for Next.js 15+
+) {
   if (req.headers.get('X-Gateway-Token') !== process.env.GATEWAY_SECRET) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  const urlPath = params.path.join('/');
-  let modelName = 'default';
+  // Await the params!
+  const resolvedParams = await params;
+  const urlPath = resolvedParams.path.join('/');
   
+  let modelName = 'default';
   const modelMatch = urlPath.match(/models\/([^:]+)/);
   if (modelMatch) modelName = modelMatch[1];
   

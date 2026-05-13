@@ -1,5 +1,4 @@
 import { kv } from '@vercel/kv';
-import crypto from 'crypto';
 
 export type KeyStatus = 'healthy' | 'cooling' | 'dead';
 
@@ -18,8 +17,12 @@ export interface KeyState {
   last_error: string;
 }
 
-export function hashKey(key: string) {
-  return crypto.createHash('sha256').update(key).digest('hex').substring(0, 8);
+// Fixed: Using Edge-compatible Web Crypto
+export async function hashKey(key: string) {
+  const data = new TextEncoder().encode(key);
+  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('').substring(0, 8);
 }
 
 function getTodayStr() {
@@ -48,7 +51,8 @@ export async function getHydratedKeys(): Promise<KeyState[]> {
   const now = Date.now();
   
   const pipeline = kv.pipeline();
-  const ids = keys.map(k => hashKey(k));
+  // Fixed: Await the hash generation
+  const ids = await Promise.all(keys.map(k => hashKey(k)));
   
   ids.forEach(id => pipeline.get(`prism:key:${id}`));
   const results = await pipeline.exec<any[]>();
