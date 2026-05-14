@@ -61,7 +61,7 @@ There is no new SDK to learn. Two configuration lines are all that changes in yo
 | Feature | Description |
 | --- | --- |
 | Intelligent Load Balancing | Routes each request to the key with the lowest per-model RPM and RPD counts at that exact moment |
-| Auto-Cooldown and Retry | On a 429, the offending key is sidelined for 90 seconds and the request is instantly rerouted to the next healthy key |
+| Auto-Cooldown and Retry | On a 429, the offending key is sidelined for 60 seconds and the request is instantly rerouted to the next healthy key |
 | Dead Key Retirement | Keys returning a 403 are permanently flagged and removed from the routing pool |
 | Model-Aware Rate Limits | Tracks usage per canonical model name, resolving aliases and `-latest` suffixes automatically |
 | Real-Time Dashboard | Monitor key health, error rates, and granular per-model usage across your entire pool |
@@ -211,7 +211,7 @@ Your App  ->  GemPrism Edge Proxy  ->  Key Pool  ->  Google Generative Language 
 5. Keys that exceed their per-model limit are excluded; keys past their cooldown window are lazily recovered to healthy
 6. The key with the lowest usage is selected (least-loaded routing)
 7. The request is forwarded to the Google API verbatim using that key
-8. On 429, the key enters a 90-second cooldown and the proxy advances to the next candidate
+8. On 429, the key enters a 60-second cooldown and the proxy advances to the next candidate
 9. On 403, the key is permanently marked dead and excluded from all future routing
 10. On success, usage counters for the key and model are upserted atomically
 
@@ -220,7 +220,7 @@ Your App  ->  GemPrism Edge Proxy  ->  Key Pool  ->  Google Generative Language 
 | State | Condition | Behavior |
 | --- | --- | --- |
 | healthy | Default state | Eligible for routing |
-| cooling | Received 429 | Excluded for 90 seconds, then lazily recovered |
+| cooling | Received 429 | Excluded for 60 seconds, then lazily recovered |
 | dead | Received 403 | Permanently excluded |
 
 ### Model Resolution

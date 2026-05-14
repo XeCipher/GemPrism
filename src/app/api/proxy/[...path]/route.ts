@@ -154,7 +154,7 @@ export async function handler(req: Request, { params }: { params: Promise<{ path
       if (response.status === 429) {
         await updateKeyState(key.id, {
           status:         'cooling',
-          cooldown_until: now + 90_000,
+          cooldown_until: now + 60_000,
           total_errors:   (key.total_errors || 0) + 1,
           last_error:     `429 Rate Limited on model ${modelName}`,
         });
