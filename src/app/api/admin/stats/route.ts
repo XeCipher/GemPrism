@@ -35,20 +35,30 @@ export async function GET(req: Request) {
     const keys = (keysReq.data ||[]).sort((a, b) => (a.name || '').localeCompare(b.name || ''));
     const modelUsage = usageReq.data ||[];
 
+    // Hydrate actual key status (lazy recovery) for accurate dashboard display
+    const now = Date.now();
+    const hydratedKeys = keys.map(k => {
+      let currentStatus = k.status;
+      if (currentStatus === 'cooling' && k.cooldown_until && now > k.cooldown_until) {
+        currentStatus = 'healthy';
+      }
+      return { ...k, status: currentStatus };
+    });
+
     return NextResponse.json({
       token: userToken,
       // Mask key safely but leave enough to recognize if unnamed
-      keys: keys.map(k => ({ 
+      keys: hydratedKeys.map(k => ({ 
         ...k, 
         key_value: `${k.key_value.slice(0, 6)}••••••••${k.key_value.slice(-4)}` 
       })),
       models: ALL_MODELS,
       usage: modelUsage,
       summary: {
-        total_requests: keys.reduce((acc, k) => acc + (k.total_requests || 0), 0),
-        active: keys.filter(k => k.status === 'healthy').length,
-        cooling: keys.filter(k => k.status === 'cooling').length,
-        dead: keys.filter(k => k.status === 'dead').length,
+        total_requests: hydratedKeys.reduce((acc, k) => acc + (k.total_requests || 0), 0),
+        active: hydratedKeys.filter(k => k.status === 'healthy').length,
+        cooling: hydratedKeys.filter(k => k.status === 'cooling').length,
+        dead: hydratedKeys.filter(k => k.status === 'dead').length,
       }
     });
 
