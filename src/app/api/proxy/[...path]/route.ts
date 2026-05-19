@@ -72,7 +72,7 @@ export async function handler(req: Request, { params }: { params: Promise<{ path
   ]);
 
   const keys   = keysReq.data  || [];
-  const usages = usageReq.data ||[];
+  const usages = usageReq.data || [];
 
   if (keys.length === 0) {
     return NextResponse.json(
@@ -116,7 +116,7 @@ export async function handler(req: Request, { params }: { params: Promise<{ path
 
   // 6. Process Request Payload
   // Using arrayBuffer protects binary uploads (like images via File API) from text corruption
-  // while still buffering it in memory so we can retry multiple keys.
+  // while still buffering it in memory so we can retry multiple keys seamlessly.
   const hasBody = !['GET', 'HEAD', 'OPTIONS'].includes(req.method);
   const payload = hasBody ? await req.arrayBuffer() : undefined;
 
@@ -128,6 +128,8 @@ export async function handler(req: Request, { params }: { params: Promise<{ path
       outboundHeaders.set(key, val);
     }
   });
+
+  let lastResponse: NextResponse | null = null;
 
   // 7. Gateway Traversal loop (Failover execution)
   for (const key of availableKeys) {
@@ -150,6 +152,9 @@ export async function handler(req: Request, { params }: { params: Promise<{ path
         body:    payload,
       });
 
+      const responseHeaders = new Headers(response.headers);
+      responseHeaders.set('Access-Control-Allow-Origin', '*'); 
+
       // Handle 429 Rate Limit
       if (response.status === 429) {
         await updateKeyState(key.id, {
@@ -158,6 +163,8 @@ export async function handler(req: Request, { params }: { params: Promise<{ path
           total_errors:   (key.total_errors || 0) + 1,
           last_error:     `429 Rate Limited on model ${modelName}`,
         });
+        const errorBody = await response.text();
+        lastResponse = new NextResponse(errorBody, { status: 429, headers: responseHeaders });
         continue; // Roll over to the next key
       }
 
@@ -168,32 +175,40 @@ export async function handler(req: Request, { params }: { params: Promise<{ path
           total_errors: (key.total_errors || 0) + 1,
           last_error:   'API Key Invalid (403)',
         });
+        const errorBody = await response.text();
+        lastResponse = new NextResponse(errorBody, { status: 403, headers: responseHeaders });
         continue; // Roll over to the next key
       }
 
-      // Route Success - Pipe Response directly to client
-      const responseHeaders = new Headers(response.headers);
-      responseHeaders.set('Access-Control-Allow-Origin', '*'); 
-
-      // Fire-and-forget telemetry update
-      if (response.ok) {
-        await Promise.all([
-          updateKeyState(key.id, {
-            total_requests: (key.total_requests || 0) + 1,
-            last_used:      now,
-            ...(key.mutated ? { status: 'healthy' } : {}),
-          }),
-          recordModelUsage(
-            userId,
-            key.id,
-            modelName,
-            key.model_rpd + 1,
-            key.model_rpm + 1,
-            todayStr,
-            now
-          ),
-        ]).catch(err => console.error("[GemPrism] Async telemetry error:", err));
+      // Handle any other Error Response (e.g., 503 High Demand, 500, 400, etc.)
+      if (!response.ok) {
+        await updateKeyState(key.id, {
+          total_errors: (key.total_errors || 0) + 1,
+          last_error:   `API Error ${response.status}: ${response.statusText || 'Unknown'}`,
+        });
+        const errorBody = await response.text();
+        lastResponse = new NextResponse(errorBody, { status: response.status, headers: responseHeaders });
+        continue; // Roll over to the next key
       }
+
+      // Route Success (2xx) - Pipe Response directly to client
+      // Fire-and-forget telemetry update
+      await Promise.all([
+        updateKeyState(key.id, {
+          total_requests: (key.total_requests || 0) + 1,
+          last_used:      now,
+          ...(key.mutated ? { status: 'healthy' } : {}),
+        }),
+        recordModelUsage(
+          userId,
+          key.id,
+          modelName,
+          key.model_rpd + 1,
+          key.model_rpm + 1,
+          todayStr,
+          now
+        ),
+      ]).catch(err => console.error("[GemPrism] Async telemetry error:", err));
 
       return new NextResponse(response.body, {
         status: response.status,
@@ -205,7 +220,16 @@ export async function handler(req: Request, { params }: { params: Promise<{ path
         total_errors: (key.total_errors || 0) + 1,
         last_error:   err?.message || 'Unknown network error',
       });
+      lastResponse = NextResponse.json(
+        { error: err?.message || 'Unknown network error' },
+        { status: 502, headers: { 'Access-Control-Allow-Origin': '*' } }
+      );
     }
+  }
+
+  // If all available keys failed, return the last encountered error response
+  if (lastResponse) {
+    return lastResponse;
   }
 
   return NextResponse.json(
