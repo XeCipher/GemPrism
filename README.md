@@ -183,7 +183,7 @@ const ai = new GoogleGenAI({
 });
 
 const response = await ai.models.generateContent({
-  model: "gemini-pro-latest",
+  model: "gemini-flash-latest",
   contents: "Explain quantum entanglement in one sentence.",
 });
 

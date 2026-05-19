@@ -363,7 +363,7 @@ const ai = new GoogleGenAI({
 
 // No other changes needed — full SDK compatibility
 const response = await ai.models.generateContent({
-  model: "gemini-pro-latest",
+  model: "gemini-flash-latest",
   contents: "Explain quantum entanglement in one sentence.",
 });
 
