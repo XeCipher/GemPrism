@@ -1,8 +1,9 @@
 import { NextResponse } from 'next/server';
-import { getSupabaseAdminClient } from '@/lib/supabaseAdmin'; // Corrected import
+import { getSupabaseAdminClient } from '@/lib/supabaseAdmin';
 import { ALL_MODELS } from '@/lib/modelLimits';
 
 export const runtime = 'edge';
+export const maxDuration = 300; // 5 minutes max duration for free Vercel accounts
 
 export async function GET(req: Request) {
   try {
@@ -32,8 +33,8 @@ export async function GET(req: Request) {
     }
 
     // Sort keys alphabetically by name in Javascript to bypass any missing DB schema columns
-    const keys = (keysReq.data ||[]).sort((a, b) => (a.name || '').localeCompare(b.name || ''));
-    const modelUsage = usageReq.data ||[];
+    const keys = (keysReq.data || []).sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+    const modelUsage = usageReq.data || [];
 
     // Hydrate actual key status (lazy recovery) for accurate dashboard display
     const now = Date.now();

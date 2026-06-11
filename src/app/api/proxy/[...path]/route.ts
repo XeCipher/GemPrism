@@ -3,6 +3,7 @@ import { getSupabaseAdminClient } from '@/lib/supabaseAdmin';
 import { getModelLimits } from '@/lib/modelLimits';
 
 export const runtime = 'edge';
+export const maxDuration = 300; // Extend duration to prevent timeouts on long-running model generations
 
 export async function handler(req: Request, { params }: { params: Promise<{ path: string[] }> }) {
   // 1. Handle Preflight safely (Headers are now attached automatically by next.config.ts)
