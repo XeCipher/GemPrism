@@ -3,7 +3,7 @@ import { getSupabaseAdminClient } from '@/lib/supabaseAdmin';
 import { getModelLimits } from '@/lib/modelLimits';
 
 export const runtime = 'edge';
-export const maxDuration = 300; // Extend duration to prevent timeouts on long-running model generations
+export const maxDuration = 300; 
 
 export async function handler(req: Request, { params }: { params: Promise<{ path: string[] }> }) {
   // 1. Handle Preflight safely (Headers are now attached automatically by next.config.ts)
@@ -77,11 +77,21 @@ export async function handler(req: Request, { params }: { params: Promise<{ path
   const now      = Date.now();
   const todayStr = new Date().toISOString().split('T')[0];
 
-  const usageMap = new Map<string, { rpd: number; rpm: number }>();
+  const usageMap = new Map<string, { rpd: number; rpm: number; windowStart: number }>();
   usages.forEach(u => {
     const rpd = u.rpd_date === todayStr ? (u.rpd_count || 0) : 0;
-    const rpm = now - (u.rpm_window_start || 0) <= 60_000 ? (u.rpm_count || 0) : 0;
-    usageMap.set(u.api_key_id, { rpd, rpm });
+    
+    let rpm = 0;
+    let windowStart = u.rpm_window_start || 0;
+    
+    // Fix: Only increment RPM if we are within 60s of the FIRST request in the window
+    if (now - windowStart <= 60_000) {
+      rpm = u.rpm_count || 0;
+    } else {
+      windowStart = now; // Window expired, reset window start
+    }
+    
+    usageMap.set(u.api_key_id, { rpd, rpm, windowStart });
   });
 
   const hydratedKeys = keys.map(key => {
@@ -90,8 +100,14 @@ export async function handler(req: Request, { params }: { params: Promise<{ path
       key.status = 'healthy';
       mutated    = true;
     }
-    const modelStats = usageMap.get(key.id) || { rpd: 0, rpm: 0 };
-    return { ...key, mutated, model_rpd: modelStats.rpd, model_rpm: modelStats.rpm };
+    const modelStats = usageMap.get(key.id) || { rpd: 0, rpm: 0, windowStart: now };
+    return { 
+      ...key, 
+      mutated, 
+      model_rpd: modelStats.rpd, 
+      model_rpm: modelStats.rpm,
+      windowStart: modelStats.windowStart
+    };
   });
 
   const availableKeys = hydratedKeys
@@ -103,7 +119,7 @@ export async function handler(req: Request, { params }: { params: Promise<{ path
   if (availableKeys.length === 0) {
     return NextResponse.json(
       { error: `All API keys are exhausted or cooling for model: ${modelName}` },
-      { status: 429 } 
+      { status: 429, headers: { 'Retry-After': '60' } } // Adding standard Retry-After header
     );
   }
 
@@ -182,7 +198,8 @@ export async function handler(req: Request, { params }: { params: Promise<{ path
           last_used:      now,
           ...(key.mutated ? { status: 'healthy' } : {}),
         }),
-        recordModelUsage(userId, key.id, modelName, key.model_rpd + 1, key.model_rpm + 1, todayStr, now),
+        // Pass key.windowStart instead of `now` to maintain the fixed sliding window
+        recordModelUsage(userId, key.id, modelName, key.model_rpd + 1, key.model_rpm + 1, todayStr, key.windowStart),
       ]).catch(err => console.error("[GemPrism] Async telemetry error:", err));
 
       return new NextResponse(response.body, { status: response.status, headers: responseHeaders });
@@ -208,9 +225,9 @@ async function updateKeyState(id: string, updates: Record<string, unknown>) {
   if (error) console.error('[GemPrism] updateKeyState failed:', error.message);
 }
 
-async function recordModelUsage(userId: string, apiKeyId: string, modelName: string, rpd: number, rpm: number, todayStr: string, now: number) {
+async function recordModelUsage(userId: string, apiKeyId: string, modelName: string, rpd: number, rpm: number, todayStr: string, windowStart: number) {
   const { error } = await getSupabaseAdminClient().from('model_usage').upsert(
-    { user_id: userId, api_key_id: apiKeyId, model_name: modelName, rpd_count: rpd, rpm_count: rpm, rpd_date: todayStr, rpm_window_start: now },
+    { user_id: userId, api_key_id: apiKeyId, model_name: modelName, rpd_count: rpd, rpm_count: rpm, rpd_date: todayStr, rpm_window_start: windowStart },
     { onConflict: 'api_key_id,model_name' }
   );
   if (error) console.error('[GemPrism] recordModelUsage failed:', error.message, error.details);
