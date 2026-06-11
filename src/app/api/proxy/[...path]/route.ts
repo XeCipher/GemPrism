@@ -4,23 +4,15 @@ import { getModelLimits } from '@/lib/modelLimits';
 
 export const runtime = 'edge';
 
-// Handle all HTTP methods seamlessly through a single master handler
 export async function handler(req: Request, { params }: { params: Promise<{ path: string[] }> }) {
-  // 1. CORS Preflight & Global Headers
+  // 1. Handle Preflight safely (Headers are now attached automatically by next.config.ts)
   if (req.method === 'OPTIONS') {
-    return new NextResponse(null, {
-      status: 200,
-      headers: {
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS, PATCH',
-        'Access-Control-Allow-Headers': '*',
-      }
-    });
+    return new NextResponse(null, { status: 200 });
   }
 
   const reqUrl = new URL(req.url);
 
-  // 2. Token Extraction (Header, Bearer, or Query Param to support all SDKs)
+  // 2. Token Extraction
   let incomingToken = req.headers.get('x-goog-api-key') || reqUrl.searchParams.get('key');
   if (!incomingToken) {
     const auth = req.headers.get('authorization');
@@ -110,17 +102,14 @@ export async function handler(req: Request, { params }: { params: Promise<{ path
   if (availableKeys.length === 0) {
     return NextResponse.json(
       { error: `All API keys are exhausted or cooling for model: ${modelName}` },
-      { status: 429 } // Return 429 so SDKs trigger standard back-off handling
+      { status: 429 } 
     );
   }
 
   // 6. Process Request Payload
-  // Using arrayBuffer protects binary uploads (like images via File API) from text corruption
-  // while still buffering it in memory so we can retry multiple keys seamlessly.
   const hasBody = !['GET', 'HEAD', 'OPTIONS'].includes(req.method);
   const payload = hasBody ? await req.arrayBuffer() : undefined;
 
-  // Forward Headers verbatim (exclude auth and routing specifics)
   const outboundHeaders = new Headers();
   req.headers.forEach((val, key) => {
     const lower = key.toLowerCase();
@@ -131,10 +120,9 @@ export async function handler(req: Request, { params }: { params: Promise<{ path
 
   let lastResponse: NextResponse | null = null;
 
-  // 7. Gateway Traversal loop (Failover execution)
+  // 7. Gateway Traversal loop
   for (const key of availableKeys) {
     try {
-      // Construct exact target URL including ALL original SDK query parameters
       const targetUrlObj = new URL(`https://generativelanguage.googleapis.com/${urlPath}`);
       reqUrl.searchParams.forEach((val, pKey) => {
         const lowerKey = pKey.toLowerCase();
@@ -143,7 +131,6 @@ export async function handler(req: Request, { params }: { params: Promise<{ path
         }
       });
       
-      // Inject the active Google API key selected by the load balancer
       targetUrlObj.searchParams.append('key', key.key_value);
 
       const response = await fetch(targetUrlObj.toString(), {
@@ -152,10 +139,9 @@ export async function handler(req: Request, { params }: { params: Promise<{ path
         body:    payload,
       });
 
+      // Headers will automatically be supplemented by next.config.ts
       const responseHeaders = new Headers(response.headers);
-      responseHeaders.set('Access-Control-Allow-Origin', '*'); 
 
-      // Handle 429 Rate Limit
       if (response.status === 429) {
         await updateKeyState(key.id, {
           status:         'cooling',
@@ -165,10 +151,9 @@ export async function handler(req: Request, { params }: { params: Promise<{ path
         });
         const errorBody = await response.text();
         lastResponse = new NextResponse(errorBody, { status: 429, headers: responseHeaders });
-        continue; // Roll over to the next key
+        continue;
       }
 
-      // Handle 403 Invalid/Revoked Key
       if (response.status === 403) {
         await updateKeyState(key.id, {
           status:       'dead',
@@ -177,10 +162,9 @@ export async function handler(req: Request, { params }: { params: Promise<{ path
         });
         const errorBody = await response.text();
         lastResponse = new NextResponse(errorBody, { status: 403, headers: responseHeaders });
-        continue; // Roll over to the next key
+        continue;
       }
 
-      // Handle any other Error Response (e.g., 503 High Demand, 500, 400, etc.)
       if (!response.ok) {
         await updateKeyState(key.id, {
           total_errors: (key.total_errors || 0) + 1,
@@ -188,91 +172,45 @@ export async function handler(req: Request, { params }: { params: Promise<{ path
         });
         const errorBody = await response.text();
         lastResponse = new NextResponse(errorBody, { status: response.status, headers: responseHeaders });
-        continue; // Roll over to the next key
+        continue; 
       }
 
-      // Route Success (2xx) - Pipe Response directly to client
-      // Fire-and-forget telemetry update
       await Promise.all([
         updateKeyState(key.id, {
           total_requests: (key.total_requests || 0) + 1,
           last_used:      now,
           ...(key.mutated ? { status: 'healthy' } : {}),
         }),
-        recordModelUsage(
-          userId,
-          key.id,
-          modelName,
-          key.model_rpd + 1,
-          key.model_rpm + 1,
-          todayStr,
-          now
-        ),
+        recordModelUsage(userId, key.id, modelName, key.model_rpd + 1, key.model_rpm + 1, todayStr, now),
       ]).catch(err => console.error("[GemPrism] Async telemetry error:", err));
 
-      return new NextResponse(response.body, {
-        status: response.status,
-        headers: responseHeaders,
-      });
+      return new NextResponse(response.body, { status: response.status, headers: responseHeaders });
 
     } catch (err: any) {
       await updateKeyState(key.id, {
         total_errors: (key.total_errors || 0) + 1,
         last_error:   err?.message || 'Unknown network error',
       });
-      lastResponse = NextResponse.json(
-        { error: err?.message || 'Unknown network error' },
-        { status: 502, headers: { 'Access-Control-Allow-Origin': '*' } }
-      );
+      lastResponse = NextResponse.json({ error: err?.message || 'Unknown network error' }, { status: 502 });
     }
   }
 
-  // If all available keys failed, return the last encountered error response
-  if (lastResponse) {
-    return lastResponse;
-  }
+  if (lastResponse) return lastResponse;
 
-  return NextResponse.json(
-    { error: 'All available keys failed to process the request.' },
-    { status: 502, headers: { 'Access-Control-Allow-Origin': '*' } }
-  );
+  return NextResponse.json({ error: 'All available keys failed to process the request.' }, { status: 502 });
 }
 
-// Map the master handler to all HTTP methods used by the GenAI SDK
 export { handler as GET, handler as POST, handler as OPTIONS, handler as PUT, handler as PATCH, handler as DELETE };
-
-// ─── Database Helpers ─────────────────────────────────────────────────────────
 
 async function updateKeyState(id: string, updates: Record<string, unknown>) {
   const { error } = await getSupabaseAdminClient().from('api_keys').update(updates).eq('id', id);
-  if (error) {
-    console.error('[GemPrism] updateKeyState failed:', error.message);
-  }
+  if (error) console.error('[GemPrism] updateKeyState failed:', error.message);
 }
 
-async function recordModelUsage(
-  userId:    string,
-  apiKeyId:  string,
-  modelName: string,
-  rpd:       number,
-  rpm:       number,
-  todayStr:  string,
-  now:       number
-) {
+async function recordModelUsage(userId: string, apiKeyId: string, modelName: string, rpd: number, rpm: number, todayStr: string, now: number) {
   const { error } = await getSupabaseAdminClient().from('model_usage').upsert(
-    {
-      user_id:          userId,
-      api_key_id:       apiKeyId,
-      model_name:       modelName,
-      rpd_count:        rpd,
-      rpm_count:        rpm,
-      rpd_date:         todayStr,
-      rpm_window_start: now,
-    },
+    { user_id: userId, api_key_id: apiKeyId, model_name: modelName, rpd_count: rpd, rpm_count: rpm, rpd_date: todayStr, rpm_window_start: now },
     { onConflict: 'api_key_id,model_name' }
   );
-
-  if (error) {
-    console.error('[GemPrism] recordModelUsage failed:', error.message, error.details);
-  }
+  if (error) console.error('[GemPrism] recordModelUsage failed:', error.message, error.details);
 }
