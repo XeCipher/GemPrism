@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { getSupabaseAdminClient } from '@/lib/supabaseAdmin';
 import { ALL_MODELS } from '@/lib/modelLimits';
 
-export const runtime = 'edge';
+export const runtime = 'nodejs';
 export const maxDuration = 300; // 5 minutes max duration for free Vercel accounts
 
 export async function GET(req: Request) {

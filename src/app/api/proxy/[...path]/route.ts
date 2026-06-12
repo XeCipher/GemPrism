@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { getSupabaseAdminClient } from '@/lib/supabaseAdmin';
 import { getModelLimits } from '@/lib/modelLimits';
 
-export const runtime = 'edge';
+export const runtime = 'nodejs';
 export const maxDuration = 300; 
 
 export async function handler(req: Request, { params }: { params: Promise<{ path: string[] }> }) {
