@@ -130,7 +130,7 @@ export async function handler(req: Request, { params }: { params: Promise<{ path
   const outboundHeaders = new Headers();
   req.headers.forEach((val, key) => {
     const lower = key.toLowerCase();
-    if (!['host', 'connection', 'x-goog-api-key', 'authorization', 'content-length'].includes(lower)) {
+    if (!['host', 'connection', 'x-goog-api-key', 'authorization', 'content-length', 'accept-encoding'].includes(lower)) {
       outboundHeaders.set(key, val);
     }
   });
@@ -158,6 +158,9 @@ export async function handler(req: Request, { params }: { params: Promise<{ path
 
       // Headers will automatically be supplemented by next.config.ts
       const responseHeaders = new Headers(response.headers);
+
+      responseHeaders.delete('content-encoding');
+      responseHeaders.delete('content-length');
 
       if (response.status === 429) {
         await updateKeyState(key.id, {
