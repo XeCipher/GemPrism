@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { getSupabaseAdminClient } from '@/lib/supabaseAdmin';
-import { getModelLimits } from '@/lib/modelLimits';
+import { getModelLimits, getQuotaResetDateStr } from '@/lib/modelLimits';
 
 export const runtime = 'nodejs';
 export const maxDuration = 300; 
@@ -75,7 +75,7 @@ export async function handler(req: Request, { params }: { params: Promise<{ path
   }
 
   const now      = Date.now();
-  const todayStr = new Date().toISOString().split('T')[0];
+  const todayStr = getQuotaResetDateStr();
 
   const usageMap = new Map<string, { rpd: number; rpm: number; windowStart: number }>();
   usages.forEach(u => {

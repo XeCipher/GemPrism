@@ -4,6 +4,27 @@ export const MODEL_ALIASES: Record<string, string> = {
   "gemini-pro-latest":        "gemini-3.1-pro-preview"
 };
 
+/**
+ * Gemini API daily quotas reset at midnight Pacific Time (PT).
+ * This translates to ~12:30 PM IST (07:00 UTC) during PDT and ~1:30 PM IST (08:00 UTC) during PST.
+ * We format the current date strictly in the America/Los_Angeles timezone to perfectly align with Google's reset window.
+ */
+export function getQuotaResetDateStr(date: Date = new Date()): string {
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Los_Angeles",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  
+  const parts = formatter.formatToParts(date);
+  const year = parts.find((p) => p.type === "year")?.value;
+  const month = parts.find((p) => p.type === "month")?.value;
+  const day = parts.find((p) => p.type === "day")?.value;
+  
+  return `${year}-${month}-${day}`;
+}
+
 export const ALL_MODELS: Record<string, { name: string; rpm: number; rpd: number }> = {
   // Embeddings
   "gemini-embedding-1":                   { name: "Gemini Embedding 1",                           rpm:    100, rpd:   1000 },

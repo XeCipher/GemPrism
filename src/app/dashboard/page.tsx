@@ -11,6 +11,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { CodeBlock } from "@/components/CodeBlock";
 import { LogoLayeredCore } from "@/components/Logo";
+import { getQuotaResetDateStr } from "@/lib/modelLimits";
 
 // ─── Toast ───────────────────────────────────────────────────────────────────
 
@@ -299,7 +300,7 @@ export default function Dashboard() {
     if (!activeKeyId) return { rpm: 0, rpd: 0 };
 
     const now      = Date.now();
-    const todayStr = new Date().toISOString().split('T')[0];
+    const todayStr = getQuotaResetDateStr();
 
     const record = data.usage.find(
       (u: any) => u.api_key_id === activeKeyId && u.model_name === modelName
@@ -314,7 +315,7 @@ export default function Dashboard() {
 
   const getKeyTotals = (keyId: string): { rpd: number; rpm: number } => {
     const now      = Date.now();
-    const todayStr = new Date().toISOString().split('T')[0];
+    const todayStr = getQuotaResetDateStr();
 
     const keyUsages = (data.usage ||[]).filter((u: any) => u.api_key_id === keyId);
 
