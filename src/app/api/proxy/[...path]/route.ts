@@ -6,7 +6,7 @@ export const runtime = 'nodejs';
 export const maxDuration = 300; 
 
 export async function handler(req: Request, { params }: { params: Promise<{ path: string[] }> }) {
-  // 1. Handle Preflight safely (Headers are now attached automatically by next.config.ts)
+  // 1. Handle Preflight safely
   if (req.method === 'OPTIONS') {
     return new NextResponse(null, { status: 200 });
   }
@@ -29,7 +29,7 @@ export async function handler(req: Request, { params }: { params: Promise<{ path
     .from('gateway_tokens')
     .select('user_id')
     .eq('token', incomingToken)
-    .single();
+    .maybeSingle();
 
   if (!tokenData) {
     return NextResponse.json({ error: 'Invalid Gateway Token' }, { status: 401 });
@@ -84,7 +84,7 @@ export async function handler(req: Request, { params }: { params: Promise<{ path
     let rpm = 0;
     let windowStart = u.rpm_window_start || 0;
     
-    // Fix: Only increment RPM if we are within 60s of the FIRST request in the window
+    // Only increment RPM if we are within 60s of the FIRST request in the window
     if (now - windowStart <= 60_000) {
       rpm = u.rpm_count || 0;
     } else {
@@ -119,7 +119,7 @@ export async function handler(req: Request, { params }: { params: Promise<{ path
   if (availableKeys.length === 0) {
     return NextResponse.json(
       { error: `All API keys are exhausted or cooling for model: ${modelName}` },
-      { status: 429, headers: { 'Retry-After': '60' } } // Adding standard Retry-After header
+      { status: 429, headers: { 'Retry-After': '60' } }
     );
   }
 
@@ -156,63 +156,85 @@ export async function handler(req: Request, { params }: { params: Promise<{ path
         body:    payload,
       });
 
-      // Headers will automatically be supplemented by next.config.ts
       const responseHeaders = new Headers(response.headers);
-
       responseHeaders.delete('content-encoding');
       responseHeaders.delete('content-length');
 
-      if (response.status === 429) {
-        await updateKeyState(key.id, {
-          status:         'cooling',
-          cooldown_until: now + 60_000,
-          total_errors:   (key.total_errors || 0) + 1,
-          last_error:     `429 Rate Limited on model ${modelName}`,
-        });
+      const status = response.status;
+      const isRateLimit = status === 429;
+      const isDeadKey = status === 403;
+      const isServerError = status >= 500;
+      
+      // We only want to retry on limits, dead keys, or temporary Google server faults.
+      // Retrying on a 400 (Client Bad Request) will just multiply errors across all keys.
+      const shouldRetry = isRateLimit || isDeadKey || isServerError;
+
+      if (isRateLimit) {
+        await Promise.all([
+          updateKeyState(key.id, { errors: 1, requests: 1 }, {
+            status:         'cooling',
+            cooldown_until: now + 60_000,
+            last_error:     `429 Rate Limited on model ${modelName}`,
+          }),
+          recordModelUsage(userId, key.id, modelName, todayStr, key.windowStart)
+        ]).catch(err => console.error("[GemPrism] Async telemetry error:", err));
+        
         const errorBody = await response.text();
         lastResponse = new NextResponse(errorBody, { status: 429, headers: responseHeaders });
         continue;
       }
 
-      if (response.status === 403) {
-        await updateKeyState(key.id, {
-          status:       'dead',
-          total_errors: (key.total_errors || 0) + 1,
-          last_error:   'API Key Invalid (403)',
-        });
+      if (isDeadKey) {
+        await Promise.all([
+          updateKeyState(key.id, { errors: 1, requests: 1 }, {
+            status:       'dead',
+            last_error:   'API Key Invalid (403)',
+          }),
+          recordModelUsage(userId, key.id, modelName, todayStr, key.windowStart)
+        ]).catch(err => console.error("[GemPrism] Async telemetry error:", err));
+        
         const errorBody = await response.text();
         lastResponse = new NextResponse(errorBody, { status: 403, headers: responseHeaders });
         continue;
       }
 
       if (!response.ok) {
-        await updateKeyState(key.id, {
-          total_errors: (key.total_errors || 0) + 1,
-          last_error:   `API Error ${response.status}: ${response.statusText || 'Unknown'}`,
-        });
-        const errorBody = await response.text();
-        lastResponse = new NextResponse(errorBody, { status: response.status, headers: responseHeaders });
-        continue; 
+        await Promise.all([
+          updateKeyState(key.id, { errors: 1, requests: 1 }, {
+            last_error:   `API Error ${status}: ${response.statusText || 'Unknown'}`,
+            ...(key.mutated ? { status: 'healthy' } : {}),
+            last_used:    now,
+          }),
+          recordModelUsage(userId, key.id, modelName, todayStr, key.windowStart)
+        ]).catch(err => console.error("[GemPrism] Async telemetry error:", err));
+        
+        if (shouldRetry) {
+          const errorBody = await response.text();
+          lastResponse = new NextResponse(errorBody, { status: status, headers: responseHeaders });
+          continue; 
+        } else {
+          // It's a client error (e.g. 400). Break the loop to stop burning RPD on other keys!
+          return new NextResponse(response.body, { status: status, headers: responseHeaders });
+        }
       }
 
+      // Success!
       await Promise.all([
-        updateKeyState(key.id, {
-          total_requests: (key.total_requests || 0) + 1,
+        updateKeyState(key.id, { requests: 1 }, {
           last_used:      now,
           ...(key.mutated ? { status: 'healthy' } : {}),
         }),
-        // Pass key.windowStart instead of `now` to maintain the fixed sliding window
-        recordModelUsage(userId, key.id, modelName, key.model_rpd + 1, key.model_rpm + 1, todayStr, key.windowStart),
+        recordModelUsage(userId, key.id, modelName, todayStr, key.windowStart),
       ]).catch(err => console.error("[GemPrism] Async telemetry error:", err));
 
-      return new NextResponse(response.body, { status: response.status, headers: responseHeaders });
+      return new NextResponse(response.body, { status: status, headers: responseHeaders });
 
     } catch (err: any) {
-      await updateKeyState(key.id, {
-        total_errors: (key.total_errors || 0) + 1,
+      await updateKeyState(key.id, { errors: 1 }, {
         last_error:   err?.message || 'Unknown network error',
       });
       lastResponse = NextResponse.json({ error: err?.message || 'Unknown network error' }, { status: 502 });
+      continue;
     }
   }
 
@@ -223,14 +245,56 @@ export async function handler(req: Request, { params }: { params: Promise<{ path
 
 export { handler as GET, handler as POST, handler as OPTIONS, handler as PUT, handler as PATCH, handler as DELETE };
 
-async function updateKeyState(id: string, updates: Record<string, unknown>) {
-  const { error } = await getSupabaseAdminClient().from('api_keys').update(updates).eq('id', id);
+async function updateKeyState(id: string, increments: { requests?: number, errors?: number }, updates: Record<string, unknown>) {
+  const admin = getSupabaseAdminClient();
+  
+  // Fetch fresh stats just-in-time to prevent race conditions during concurrent requests
+  const { data: current } = await admin.from('api_keys').select('total_requests, total_errors').eq('id', id).maybeSingle();
+  
+  const finalUpdates: Record<string, unknown> = { ...updates };
+  if (increments.requests) finalUpdates.total_requests = (current?.total_requests || 0) + increments.requests;
+  if (increments.errors)   finalUpdates.total_errors   = (current?.total_errors || 0) + increments.errors;
+
+  const { error } = await admin.from('api_keys').update(finalUpdates).eq('id', id);
   if (error) console.error('[GemPrism] updateKeyState failed:', error.message);
 }
 
-async function recordModelUsage(userId: string, apiKeyId: string, modelName: string, rpd: number, rpm: number, todayStr: string, windowStart: number) {
-  const { error } = await getSupabaseAdminClient().from('model_usage').upsert(
-    { user_id: userId, api_key_id: apiKeyId, model_name: modelName, rpd_count: rpd, rpm_count: rpm, rpd_date: todayStr, rpm_window_start: windowStart },
+async function recordModelUsage(userId: string, apiKeyId: string, modelName: string, todayStr: string, windowStart: number) {
+  const admin = getSupabaseAdminClient();
+  
+  // Fetch fresh model usage just-in-time to prevent race condition tracking loss
+  const { data: current } = await admin.from('model_usage')
+    .select('*')
+    .eq('api_key_id', apiKeyId)
+    .eq('model_name', modelName)
+    .maybeSingle();
+
+  const now = Date.now();
+  let rpd = 1;
+  let rpm = 1;
+  let updatedWindowStart = windowStart;
+
+  if (current) {
+    const isToday = current.rpd_date === todayStr;
+    const isSameWindow = (now - (current.rpm_window_start || 0)) <= 60_000;
+
+    rpd = isToday ? (current.rpd_count || 0) + 1 : 1;
+    rpm = isSameWindow ? (current.rpm_count || 0) + 1 : 1;
+    updatedWindowStart = isSameWindow ? current.rpm_window_start : now;
+  } else {
+    updatedWindowStart = now;
+  }
+
+  const { error } = await admin.from('model_usage').upsert(
+    { 
+      user_id: userId, 
+      api_key_id: apiKeyId, 
+      model_name: modelName, 
+      rpd_count: rpd, 
+      rpm_count: rpm, 
+      rpd_date: todayStr, 
+      rpm_window_start: updatedWindowStart 
+    },
     { onConflict: 'api_key_id,model_name' }
   );
   if (error) console.error('[GemPrism] recordModelUsage failed:', error.message, error.details);
