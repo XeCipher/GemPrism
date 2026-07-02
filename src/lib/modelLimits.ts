@@ -5,6 +5,21 @@ export const MODEL_ALIASES: Record<string, string> = {
 };
 
 /**
+ * Intelligent degradation chains for 503 Overloaded fallback mechanism.
+ * Flash falls back to older Flash, Lite to Lite, Pro to Pro.
+ */
+export const MODEL_FALLBACKS: Record<string, string[]> = {
+  "gemini-3.5-flash":         ["gemini-3-flash", "gemini-2.5-flash", "gemini-2-flash"],
+  "gemini-3-flash":           ["gemini-2.5-flash", "gemini-2-flash"],
+  "gemini-3-flash-preview":   ["gemini-2.5-flash", "gemini-2-flash"],
+  "gemini-3.1-flash-lite":    ["gemini-2.5-flash-lite", "gemini-2-flash-lite"],
+  "gemini-2.5-flash":         ["gemini-2-flash"],
+  "gemini-2.5-flash-lite":    ["gemini-2-flash-lite"],
+  "gemini-3.1-pro":           ["gemini-2.5-pro"],
+  "gemini-3.1-pro-preview":   ["gemini-2.5-pro"],
+};
+
+/**
  * Gemini API daily quotas reset at midnight Pacific Time (PT).
  * This translates to ~12:30 PM IST (07:00 UTC) during PDT and ~1:30 PM IST (08:00 UTC) during PST.
  * We format the current date strictly in the America/Los_Angeles timezone to perfectly align with Google's reset window.
