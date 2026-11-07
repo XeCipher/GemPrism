@@ -8,7 +8,6 @@ import {
 import { CodeBlock } from "@/components/CodeBlock";
 import { LogoLayeredCore } from "@/components/Logo";
 
-/* ─── Custom GitHub Icon ─── */
 function CustomGithubIcon({ size = 24, className = "" }: { size?: number; className?: string }) {
   return (
     <svg viewBox="0 0 24 24" width={size} height={size} className={className} fill="currentColor" xmlns="http://www.w3.org/2000/svg">
@@ -17,23 +16,21 @@ function CustomGithubIcon({ size = 24, className = "" }: { size?: number; classN
   );
 }
 
-/* ─── Types ─── */
-type KeyStatus = "healthy" | "cooling" | "dead";
+type KeyStatus = "healthy" | "dead";
 interface ApiKeySim { id: number; status: KeyStatus; rpm: number }
 
-/* ─── Constants ─── */
-const STATUSES: KeyStatus[] = ["healthy", "healthy", "healthy", "healthy", "cooling", "dead"];
+const STATUSES: KeyStatus[] = ["healthy", "healthy", "healthy", "healthy", "healthy", "dead"];
 
 const FEATURES =[
   {
     icon: Zap,
-    title: "Intelligent Load Balancing",
-    desc: "Distributes traffic across your API key pool in real time, actively tracking and favoring keys with the lowest RPM and RPD counts for the exact model you requested.",
+    title: "Sequential Load Balancing",
+    desc: "Maximizes utilization by exhausting the first active API key before smoothly rolling over to the next, with zero drops.",
   },
   {
     icon: Shield,
-    title: "Auto-Cooldown & Retry",
-    desc: "Hitting a 429 rate-limit? The exact API key is sidelined for 90 seconds and the request is instantly re-routed to the next healthy key automatically.",
+    title: "Zero-Cooldown Failover",
+    desc: "Hitting a 429 quota limit? The request is instantly re-routed to the next healthy key in your sequence automatically.",
   },
   {
     icon: Activity,
@@ -46,7 +43,7 @@ const STEPS =[
   "Create a free account and add your Gemini API keys.",
   "Receive a single secure Gateway Token for your project.",
   "Point the Google GenAI SDK's baseUrl at GemPrism.",
-  "Watch live as we balance, retry, and recover failed keys.",
+  "Watch live as we route, failover, and gracefully degrade overloaded models.",
 ];
 
 const CODE = `import { GoogleGenAI } from "@google/genai";
@@ -66,7 +63,6 @@ const response = await ai.models.generateContent({
 
 console.log(response.text);`;
 
-/* ─── Animated Key-Node Grid ─── */
 function ApiKeyGrid() {
   const [keys, setKeys] = useState<ApiKeySim[]>(() =>
     Array.from({ length: 18 }, (_, i) => ({ id: i, status: "healthy" as KeyStatus, rpm: 0 }))
@@ -102,7 +98,6 @@ function ApiKeyGrid() {
 
   const color: Record<KeyStatus, string> = {
     healthy: "bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.6)]",
-    cooling: "bg-amber-400 shadow-[0_0_8px_rgba(251,191,36,0.5)]",
     dead:    "bg-red-500   shadow-[0_0_8px_rgba(239,68,68,0.4)]",
   };
 
@@ -135,7 +130,7 @@ function ApiKeyGrid() {
       </div>
 
       <div className="mt-6 pt-4 border-t border-neutral-800/60 flex flex-wrap items-center justify-between font-[family-name:var(--font-mono)] text-[9px] sm:text-[10px] md:text-xs font-medium text-neutral-500 gap-2">
-        {(["healthy", "cooling", "dead"] as KeyStatus[]).map(s => (
+        {(["healthy", "dead"] as KeyStatus[]).map(s => (
           <span key={s} className="flex items-center gap-1.5">
             <span className={`w-2 h-2 rounded-sm ${color[s].split(" ")[0]}`} />
             {s.toUpperCase()}:&nbsp;{keys.filter(k => k.status === s).length}
@@ -146,12 +141,10 @@ function ApiKeyGrid() {
   );
 }
 
-/* ─── Main Component ─── */
 export default function LandingPage() {
   return (
     <div className="min-h-screen bg-[#030303] bg-grid text-neutral-300 overflow-x-hidden selection:bg-emerald-500/25">
 
-      {/* ── Navigation ── */}
       <nav className="sticky top-0 z-50 border-b border-neutral-800/60 bg-[#030303]/85 backdrop-blur-md">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between">
           <Link href="/" className="flex items-center gap-2 text-white font-bold tracking-tight text-lg sm:text-xl">
@@ -185,11 +178,9 @@ export default function LandingPage() {
         </div>
       </nav>
 
-      {/* ── Hero ── */}
       <section className="max-w-7xl mx-auto px-4 sm:px-6 pt-16 sm:pt-24 lg:pt-32 pb-16 sm:pb-24">
         <div className="grid lg:grid-cols-2 gap-12 lg:gap-16 items-center">
 
-          {/* left */}
           <div className="opacity-0 animate-fade-up text-center lg:text-left flex flex-col items-center lg:items-start min-w-0" style={{ animationDelay: "0ms", animationFillMode: "forwards" }}>
             <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-emerald-500/10 border border-emerald-500/25 text-emerald-400 text-[11px] sm:text-xs font-bold tracking-widest uppercase mb-6 sm:mb-8">
               <span className="relative flex h-2 w-2">
@@ -206,8 +197,8 @@ export default function LandingPage() {
 
             <p className="text-base sm:text-lg text-neutral-400 leading-relaxed mb-8 sm:mb-10 max-w-lg mx-auto lg:mx-0">
               GemPrism pools your Google Gemini API keys into a single gateway endpoint.
-              Requests are load-balanced based on exact model limits, keys cool down automatically, and
-              dead keys are retired, all without requiring changes to your SDK code.
+              Requests are sequentially load-balanced, automatically degrading across older model versions on server overload without dropping a request, and
+              all without requiring changes to your SDK code.
             </p>
 
             <div className="flex flex-col sm:flex-row gap-3 sm:gap-4 w-full sm:w-auto">
@@ -239,7 +230,6 @@ export default function LandingPage() {
             </div>
           </div>
 
-          {/* right - live grid */}
           <div
             className="opacity-0 animate-fade-up flex justify-center lg:justify-end w-full min-w-0"
             style={{ animationDelay: "150ms", animationFillMode: "forwards" }}
@@ -249,7 +239,6 @@ export default function LandingPage() {
         </div>
       </section>
 
-      {/* ── Features ── */}
       <section className="border-t border-neutral-800/50 py-20 bg-[#050505]">
         <div className="max-w-7xl mx-auto px-4 sm:px-6">
           <div className="text-center mb-12 sm:mb-16">
@@ -278,11 +267,9 @@ export default function LandingPage() {
         </div>
       </section>
 
-      {/* ── How it Works + Code ── */}
       <section id="how-it-works" className="border-t border-neutral-800/50 py-20 lg:py-32">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 grid lg:grid-cols-2 gap-12 lg:gap-16 items-center lg:items-start">
 
-          {/* steps */}
           <div className="order-2 lg:order-1 min-w-0">
             <p className="text-xs font-bold tracking-widest text-emerald-500 uppercase mb-3">
               Drop-in integration
@@ -317,7 +304,6 @@ export default function LandingPage() {
             </Link>
           </div>
 
-          {/* code block */}
           <div className="relative order-1 lg:order-2 w-full max-w-full min-w-0">
             <div className="absolute -inset-4 sm:-inset-8 bg-gradient-to-tr from-emerald-500/10 to-cyan-500/10 blur-3xl rounded-full pointer-events-none" />
             <CodeBlock code={CODE} />
@@ -325,7 +311,6 @@ export default function LandingPage() {
         </div>
       </section>
 
-      {/* ── Request Flow Diagram ── */}
       <section className="border-t border-neutral-800/50 py-20 bg-[#050505]">
         <div className="max-w-5xl mx-auto px-4 sm:px-6 text-center">
           <p className="text-xs font-bold tracking-widest text-emerald-500 uppercase mb-3">
@@ -333,7 +318,6 @@ export default function LandingPage() {
           </p>
           <h2 className="text-3xl sm:text-4xl font-bold text-white mb-12 lg:mb-16 tracking-tight">Request flow</h2>
 
-          {/* Flowchart container (Responsive Flex/Grid logic to ensure it doesn't break UI on mobile) */}
           <div className="flex flex-col lg:flex-row items-center justify-center gap-0">
             {[
               { label: "Your App",        sub: "Any GenAI SDK",          color: "border-neutral-700  bg-[#0a0a0a]" },
@@ -362,13 +346,11 @@ export default function LandingPage() {
 
           <div className="mt-12 inline-flex flex-col sm:flex-row items-start sm:items-center gap-4 sm:gap-8 text-xs sm:text-sm font-medium text-neutral-500 text-left">
             <span className="flex items-center gap-2"><span className="w-2.5 h-2.5 rounded-sm bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]" /> Healthy - routes normally</span>
-            <span className="flex items-center gap-2"><span className="w-2.5 h-2.5 rounded-sm bg-amber-400 shadow-[0_0_8px_rgba(251,191,36,0.5)]" /> Cooling - retried after 90s</span>
             <span className="flex items-center gap-2"><span className="w-2.5 h-2.5 rounded-sm bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.4)]"  /> Dead - retired from pool</span>
           </div>
         </div>
       </section>
 
-      {/* ── CTA ── */}
       <section className="border-t border-neutral-800/50 py-24 lg:py-32 relative overflow-hidden">
         <div className="absolute inset-0 bg-gradient-to-t from-emerald-500/5 to-transparent pointer-events-none" />
         <div className="max-w-2xl mx-auto px-4 text-center relative z-10">
@@ -387,7 +369,6 @@ export default function LandingPage() {
         </div>
       </section>
 
-      {/* ── Footer ── */}
       <footer className="border-t border-neutral-800/50 py-10 bg-[#020202]">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 flex flex-col md:flex-row items-center justify-between gap-5">
           <div className="flex items-center gap-2.5 text-white font-bold text-lg">

@@ -8,8 +8,8 @@ import Link from "next/link";
 import { LogoLayeredCore } from "@/components/Logo";
 
 const PERKS = [
-  { icon: Zap,      text: "Intelligent load balancing across your key pool" },
-  { icon: Shield,   text: "Auto-cooldown & retry on per-model rate limits" },
+  { icon: Zap,      text: "Sequential API key exhaustion with zero dropped requests" },
+  { icon: Shield,   text: "Instant rollover on quota exhaustion and model failover" },
   { icon: Activity, text: "Real-time telemetry and API health monitoring" },
 ];
 
@@ -23,7 +23,6 @@ export default function Login() {
   const [checkEmail, setCheckEmail] = useState(false);
   const [error,      setError     ] = useState("");
 
-  /* redirect if already logged in */
   useEffect(() => {
     supabaseClient.auth.getSession().then(({ data: { session } }) => {
       if (session) router.push("/dashboard");
@@ -36,7 +35,6 @@ export default function Login() {
     return () => subscription.unsubscribe();
   }, [router]);
 
-  /* clear error when user types */
   useEffect(() => { setError(""); }, [email, password, isSignUp]);
 
   const handleAuth = async (e: React.FormEvent) => {
@@ -61,7 +59,6 @@ export default function Login() {
     setLoading(false);
   };
 
-  /* ── Check-email confirmation state ── */
   if (checkEmail) {
     return (
       <div className="min-h-screen bg-[#030303] bg-dots flex items-center justify-center px-4">
@@ -88,21 +85,17 @@ export default function Login() {
     );
   }
 
-  /* ── Main layout ── */
   return (
     <div className="min-h-screen bg-[#030303] flex selection:bg-emerald-500/25">
 
-      {/* ── Left panel (desktop only) ── */}
       <div className="hidden lg:flex flex-col justify-between w-[45%] bg-[#060606] border-r border-neutral-800 p-12 bg-grid relative overflow-hidden">
         <div className="absolute top-0 left-0 w-full h-full bg-gradient-to-br from-emerald-500/5 to-transparent pointer-events-none" />
         
-        {/* logo */}
         <Link href="/" className="flex items-center gap-2 text-white font-bold text-xl relative z-10">
           <LogoLayeredCore className="text-emerald-500" size={24} />
           GemPrism
         </Link>
 
-        {/* centre copy */}
         <div className="relative z-10">
           <h2 className="text-4xl font-bold text-white leading-[1.2] mb-5 tracking-tight">
             One gateway token.<br />
@@ -125,17 +118,14 @@ export default function Login() {
           </ul>
         </div>
 
-        {/* footer note */}
         <p className="text-neutral-600 text-xs font-medium relative z-10">
           Free to use · Open source · Not affiliated with Google
         </p>
       </div>
 
-      {/* ── Right panel — form ── */}
       <div className="flex-1 flex flex-col items-center justify-center px-4 py-10 relative">
         <div className="absolute inset-0 bg-dots opacity-50 lg:hidden pointer-events-none" />
 
-        {/* mobile logo */}
         <Link href="/" className="flex items-center justify-center gap-2 text-white font-bold text-xl mb-10 lg:hidden relative z-10">
           <LogoLayeredCore className="text-emerald-500" size={28} />
           GemPrism
@@ -152,7 +142,6 @@ export default function Login() {
           </p>
 
           <form onSubmit={handleAuth} className="flex flex-col gap-4.5" noValidate>
-            {/* email */}
             <div className="flex flex-col gap-2">
               <label htmlFor="email" className="text-xs text-neutral-400 font-semibold uppercase tracking-wider">
                 Email address
@@ -169,7 +158,6 @@ export default function Login() {
               />
             </div>
 
-            {/* password */}
             <div className="flex flex-col gap-2">
               <label htmlFor="password" className="text-xs text-neutral-400 font-semibold uppercase tracking-wider">
                 Password
@@ -196,14 +184,12 @@ export default function Login() {
               </div>
             </div>
 
-            {/* inline error */}
             {error && (
               <div className="bg-red-500/10 border border-red-500/25 rounded-xl px-4 py-3 text-red-400 text-xs font-medium leading-relaxed animate-fade-in mt-1">
                 {error}
               </div>
             )}
 
-            {/* submit */}
             <button
               type="submit"
               disabled={loading}
@@ -215,7 +201,6 @@ export default function Login() {
             </button>
           </form>
 
-          {/* toggle */}
           <div className="mt-8 text-center border-t border-neutral-800/60 pt-6">
             <button
               onClick={() => { setIsSignUp(s => !s); setError(""); }}
