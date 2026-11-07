@@ -52,11 +52,58 @@ function Skeleton({ className = "" }: { className?: string }) {
   return <div className={`rounded bg-neutral-800/60 animate-pulse ${className}`} />;
 }
 
+// ─── Progress Bar ─────────────────────────────────────────────────────────────
+
+function UsageBar({ value, max, label }: { value: number; max: number; label: string }) {
+  const isUnlimited  = max === 999_999;
+  const isWaitlisted = max === 0;
+
+  let pct   = 0;
+  let color = "bg-emerald-500";
+
+  if (isWaitlisted) {
+    pct   = 0;
+    color = "bg-red-500/50";
+  } else if (isUnlimited) {
+    pct   = 0;
+    color = "bg-cyan-500";
+  } else {
+    pct   = Math.min(100, Math.round((value / max) * 100));
+    color = pct >= 90 ? "bg-red-500" : pct >= 60 ? "bg-amber-400" : "bg-emerald-500";
+  }
+
+  const displayMax = isWaitlisted ? "0" : isUnlimited ? "∞" : max.toLocaleString();
+
+  return (
+    <div className="w-full min-w-[120px]">
+      <div className="flex justify-between text-xs mb-1.5 font-medium">
+        <span className="text-neutral-500">{label}</span>
+        <span className="text-neutral-300">
+          <span className={pct > 0 && !isWaitlisted ? "text-emerald-400" : ""}>
+            {value.toLocaleString()}
+          </span>
+          <span className="text-neutral-600 mx-0.5">/</span>
+          {isUnlimited
+            ? <span className="text-cyan-400">{displayMax}</span>
+            : displayMax}
+        </span>
+      </div>
+      <div className="h-1.5 bg-neutral-900 border border-neutral-800 rounded-full overflow-hidden">
+        <div
+          className={`h-full rounded-full transition-all duration-700 ${color}`}
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+    </div>
+  );
+}
+
 // ─── Status Badge ─────────────────────────────────────────────────────────────
 
 function StatusBadge({ status }: { status: string }) {
   const map: Record<string, { cls: string; dot: string }> = {
     healthy: { cls: "bg-emerald-500/10 text-emerald-400 border-emerald-500/20", dot: "bg-emerald-500" },
+    cooling: { cls: "bg-amber-500/10  text-amber-400  border-amber-500/20",     dot: "bg-amber-400"  },
     dead:    { cls: "bg-red-500/10    text-red-400    border-red-500/20",        dot: "bg-red-500"    },
   };
   const s = map[status] ?? map.dead;
@@ -86,6 +133,8 @@ export default function Dashboard() {
   const [toasts,        setToasts       ] = useState<Toast[]>([]);
   const [activeKeyId,   setActiveKeyId  ] = useState<string>("");
 
+  // ── Toast helpers ──────────────────────────────────────────────────────────
+
   const addToast = useCallback((message: string, type: ToastType = "info") => {
     const id = Math.random().toString(36).slice(2);
     setToasts(prev => [...prev, { id, message, type }]);
@@ -95,9 +144,13 @@ export default function Dashboard() {
   const removeToast = useCallback((id: string) =>
     setToasts(prev => prev.filter(t => t.id !== id)),[]);
 
+  // ── Generate a random default key name on mount ────────────────────────────
+
   useEffect(() => {
     setNewKeyName(`Key-${Math.random().toString(36).slice(2, 6).toUpperCase()}`);
   },[]);
+
+  // ── Fetch dashboard stats ──────────────────────────────────────────────────
 
   const fetchStats = useCallback(async (sess: any, quiet = false) => {
     if (!sess) return;
@@ -130,6 +183,8 @@ export default function Dashboard() {
     }
   }, [router, addToast]);
 
+  // ── Auth init ──────────────────────────────────────────────────────────────
+
   useEffect(() => {
     supabaseClient.auth.getSession().then(({ data: { session } }) => {
       if (!session) { router.push("/login"); return; }
@@ -137,12 +192,16 @@ export default function Dashboard() {
     });
   }, [router]);
 
+  // ── Auto-refresh every 6 seconds ──────────────────────────────────────────
+
   useEffect(() => {
     if (!session) return;
     fetchStats(session);
     const id = setInterval(() => fetchStats(session, true), 6000);
     return () => clearInterval(id);
   }, [session, fetchStats]);
+
+  // ── Add key ────────────────────────────────────────────────────────────────
 
   const handleAddKey = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -160,11 +219,13 @@ export default function Dashboard() {
     } else {
       setNewKeyName(`Key-${Math.random().toString(36).slice(2, 6).toUpperCase()}`);
       setNewKeyValue("");
-      addToast("API key added. Edge sync may take up to 60s.", "success");
+      addToast("API key added successfully", "success");
       await fetchStats(session);
     }
     setIsAdding(false);
   };
+
+  // ── Delete key ─────────────────────────────────────────────────────────────
 
   const handleDeleteKey = async (keyId: string) => {
     if (confirmDelete !== keyId) {
@@ -180,11 +241,13 @@ export default function Dashboard() {
     if (error) {
       addToast("Failed to remove API key", "error");
     } else {
-      addToast("API key removed. Edge sync may take up to 60s.", "success");
+      addToast("API key removed", "success");
       await fetchStats(session);
     }
     setDeletingId(null);
   };
+
+  // ── Copy to clipboard ──────────────────────────────────────────────────────
 
   const handleCopy = (text: string) => {
     navigator.clipboard.writeText(text).catch(() => {});
@@ -193,10 +256,14 @@ export default function Dashboard() {
     setTimeout(() => setCopiedId(null), 2000);
   };
 
+  // ── Sign out ───────────────────────────────────────────────────────────────
+
   const handleSignOut = async () => {
     await supabaseClient.auth.signOut();
     router.push("/login");
   };
+
+  // ── Loading skeleton ───────────────────────────────────────────────────────
 
   if (!data) {
     return (
@@ -220,11 +287,13 @@ export default function Dashboard() {
     );
   }
 
+  // ── Derived data ───────────────────────────────────────────────────────────
+
   const STATS =[
     { label: "Total Requests", value: data.summary.total_requests, icon: Activity,    color: "text-emerald-400" },
     { label: "Active Keys",    value: data.summary.active,         icon: Zap,         color: "text-emerald-400" },
+    { label: "Cooling Keys",   value: data.summary.cooling,        icon: ShieldAlert, color: "text-amber-400"   },
     { label: "Dead Keys",      value: data.summary.dead,           icon: ServerCrash, color: "text-red-400"     },
-    { label: "Total Keys",     value: data.summary.total_keys,     icon: KeyRound,    color: "text-blue-400"    },
   ];
 
   const getUsageForActiveKey = (modelName: string) => {
@@ -260,17 +329,30 @@ export default function Dashboard() {
     );
   };
 
+  // Dynamically sort models for the table based on availability and usage volume
   const sortedModels = Object.entries(data.models)
+    .filter(([id]) => id !== "default")
     .map(([id, details]: [string, any]) => {
       const usage = getUsageForActiveKey(id);
-      return { id, details, usage };
+      const isWaitlisted = details.rpd === 0;
+      return { id, details, usage, isWaitlisted };
     })
     .sort((a, b) => {
+      // 1. Available models above waitlisted
+      if (a.isWaitlisted && !b.isWaitlisted) return 1;
+      if (!a.isWaitlisted && b.isWaitlisted) return -1;
+      
+      // 2. Highest daily requests first
       if (b.usage.rpd !== a.usage.rpd) return b.usage.rpd - a.usage.rpd;
+      
+      // 3. Highest requests per minute first
       if (b.usage.rpm !== a.usage.rpm) return b.usage.rpm - a.usage.rpm;
+      
+      // 4. Alphabetical fallback
       return a.details.name.localeCompare(b.details.name);
     });
 
+  // Dynamically build the SDK code with the user's specific access token
   const integrationCode = `import { GoogleGenAI } from "@google/genai";
 
 // ① Use your GemPrism Gateway Token as the API key
@@ -288,15 +370,19 @@ const response = await ai.models.generateContent({
 
 console.log(response.text);`;
 
+  // ── Render ─────────────────────────────────────────────────────────────────
+
   return (
     <div className="min-h-screen bg-[#030303] bg-dots text-neutral-300 p-4 md:p-8 max-w-7xl mx-auto selection:bg-emerald-500/25">
       <ToastList toasts={toasts} remove={removeToast} />
 
+      {/* ── Header ── */}
       <header className="mb-8 md:mb-10 flex flex-wrap items-center justify-between gap-4">
         <Link href="/" className="flex items-center gap-2.5 text-white font-semibold text-lg">
           <LogoLayeredCore className="text-emerald-500" size={22} />
-          <span>GemPrism</span> 
+          <span>GemPrism</span> {/* Retained on Mobile */}
           <span className="hidden sm:inline text-neutral-600 font-normal text-sm">/</span>
+          {/* Email dynamically hidden on mobile */}
           <span className="hidden sm:inline text-neutral-400 text-sm font-normal truncate max-w-[150px] sm:max-w-none">
             {session?.user?.email}
           </span>
@@ -322,6 +408,7 @@ console.log(response.text);`;
         </div>
       </header>
 
+      {/* ── Gateway Token & Integration Section ── */}
       <div className="mb-8">
         <div className="bg-[#0a0a0a] border border-emerald-500/20 rounded-2xl p-5 sm:p-6 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-xl">
           <div>
@@ -343,6 +430,7 @@ console.log(response.text);`;
           </button>
         </div>
 
+        {/* Dynamic Integration Snippet */}
         <div className="mt-4">
           <details className="group bg-[#0a0a0a] border border-neutral-800 rounded-2xl overflow-hidden shadow-lg transition-all open:ring-1 open:ring-emerald-500/20">
             <summary className="flex items-center justify-between px-5 py-4 cursor-pointer select-none hover:bg-[#0d0d0d] transition-colors">
@@ -359,6 +447,7 @@ console.log(response.text);`;
         </div>
       </div>
 
+      {/* ── Stat Cards ── */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4 mb-10">
         {STATS.map(({ label, value, icon: Icon, color }) => (
           <div key={label} className="bg-[#0a0a0a] border border-neutral-800 rounded-xl p-4 sm:p-5 flex flex-col gap-3 shadow-lg">
@@ -378,6 +467,7 @@ console.log(response.text);`;
         ))}
       </div>
 
+      {/* ── Add Key Form ── */}
       <form
         onSubmit={handleAddKey}
         className="flex flex-col sm:flex-row gap-2.5 mb-12 bg-[#0a0a0a] p-3 sm:p-4 rounded-2xl border border-neutral-800"
@@ -408,6 +498,7 @@ console.log(response.text);`;
         </button>
       </form>
 
+      {/* ── API Keys Pool ── */}
       <div className="mb-12">
         <div className="flex items-center justify-between mb-4 px-1">
           <h2 className="text-lg font-semibold text-white flex items-center gap-2">
@@ -424,11 +515,12 @@ console.log(response.text);`;
             <KeyRound size={36} className="opacity-30 mb-2" />
             <p className="text-sm font-medium text-neutral-400">No keys added yet.</p>
             <p className="text-xs text-neutral-500 max-w-xs text-center">
-              Paste a Gemini API key above to start sequential routing.
+              Paste a Gemini API key above to start load-balancing requests.
             </p>
           </div>
         ) : (
           <>
+            {/* Desktop Table */}
             <div className="hidden md:block bg-[#0a0a0a] border border-neutral-800 rounded-2xl overflow-hidden shadow-xl">
               <table className="w-full text-left text-sm">
                 <thead>
@@ -513,6 +605,7 @@ console.log(response.text);`;
               </table>
             </div>
 
+            {/* Mobile Card View */}
             <div className="md:hidden flex flex-col gap-3">
               {data.keys.map((k: any) => {
                 const totals = getKeyTotals(k.id);
@@ -594,15 +687,16 @@ console.log(response.text);`;
         )}
       </div>
 
+      {/* ── Model Telemetry ── */}
       <div className="mb-10">
         <div className="flex flex-col md:flex-row md:items-end justify-between gap-4 mb-5 px-1">
           <div>
             <h2 className="text-lg font-semibold text-white flex items-center gap-2 mb-1">
               <Database size={18} className="text-neutral-500" />
-              Dynamic Model Registry
+              Model Registry & Exact Limits
             </h2>
             <p className="text-xs text-neutral-500">
-              Track model usage across the active API key.
+              Track precise rate limit consumption across the active API key.
             </p>
           </div>
 
@@ -629,19 +723,23 @@ console.log(response.text);`;
         </div>
 
         <div className="bg-[#0a0a0a] border border-neutral-800 rounded-2xl overflow-hidden shadow-xl">
+          {/* Desktop Table */}
           <div className="hidden md:block overflow-x-auto">
             <table className="w-full text-left text-sm">
               <thead>
                 <tr className="bg-[#0d0d0d] border-b border-neutral-800 text-neutral-500 text-xs uppercase tracking-wider font-semibold">
                   <th className="px-5 py-4 font-normal">Model</th>
                   <th className="px-5 py-4 font-normal">API Identifier</th>
-                  <th className="px-5 py-4 font-normal text-center">Requests / Min</th>
-                  <th className="px-5 py-4 font-normal text-center">Requests / Day</th>
+                  <th className="px-5 py-4 font-normal">Requests / Min</th>
+                  <th className="px-5 py-4 font-normal">Requests / Day</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-neutral-800/50">
-                {sortedModels.map(({ id, details, usage }) => (
-                  <tr key={id} className="hover:bg-[#0d0d0d] transition-colors">
+                {sortedModels.map(({ id, details, usage, isWaitlisted }) => (
+                  <tr
+                    key={id}
+                    className={`hover:bg-[#0d0d0d] transition-colors ${isWaitlisted ? "opacity-50 grayscale" : ""}`}
+                  >
                     <td className="px-5 py-4 font-medium text-white text-sm whitespace-nowrap">
                       {details.name}
                     </td>
@@ -657,15 +755,11 @@ console.log(response.text);`;
                           : <Copy size={12} className="shrink-0" />}
                       </button>
                     </td>
-                    <td className="px-5 py-4 align-middle text-center">
-                      <span className={`font-[family-name:var(--font-mono)] font-semibold text-sm tabular-nums ${usage.rpm > 0 ? "text-cyan-400" : "text-neutral-600"}`}>
-                        {usage.rpm.toLocaleString()}
-                      </span>
+                    <td className="px-5 py-4 align-middle">
+                      <UsageBar value={usage.rpm} max={details.rpm} label="RPM" />
                     </td>
-                    <td className="px-5 py-4 align-middle text-center">
-                      <span className={`font-[family-name:var(--font-mono)] font-semibold text-sm tabular-nums ${usage.rpd > 0 ? "text-emerald-400" : "text-neutral-600"}`}>
-                        {usage.rpd.toLocaleString()}
-                      </span>
+                    <td className="px-5 py-4 align-middle">
+                      <UsageBar value={usage.rpd} max={details.rpd} label="RPD" />
                     </td>
                   </tr>
                 ))}
@@ -673,9 +767,13 @@ console.log(response.text);`;
             </table>
           </div>
 
+          {/* Mobile Card View for Models */}
           <div className="md:hidden flex flex-col divide-y divide-neutral-800/60">
-            {sortedModels.map(({ id, details, usage }) => (
-              <div key={id} className="p-4 flex flex-col gap-4">
+            {sortedModels.map(({ id, details, usage, isWaitlisted }) => (
+              <div
+                key={id}
+                className={`p-4 flex flex-col gap-4 ${isWaitlisted ? "opacity-50 grayscale" : ""}`}
+              >
                 <div className="flex items-center justify-between">
                   <span className="font-semibold text-white text-sm">{details.name}</span>
                   <button
@@ -689,18 +787,8 @@ console.log(response.text);`;
                   </button>
                 </div>
                 <div className="grid grid-cols-2 gap-4 bg-[#0d0d0d] p-3 rounded-xl border border-neutral-800/50">
-                  <div className="flex flex-col items-center gap-1">
-                    <span className={`font-[family-name:var(--font-mono)] font-semibold text-sm tabular-nums ${usage.rpm > 0 ? "text-cyan-400" : "text-neutral-600"}`}>
-                      {usage.rpm.toLocaleString()}
-                    </span>
-                    <span className="text-[9px] text-neutral-600 uppercase tracking-wider font-medium">Req / Min</span>
-                  </div>
-                  <div className="flex flex-col items-center gap-1">
-                    <span className={`font-[family-name:var(--font-mono)] font-semibold text-sm tabular-nums ${usage.rpd > 0 ? "text-emerald-400" : "text-neutral-600"}`}>
-                      {usage.rpd.toLocaleString()}
-                    </span>
-                    <span className="text-[9px] text-neutral-600 uppercase tracking-wider font-medium">Req / Day</span>
-                  </div>
+                  <UsageBar value={usage.rpm} max={details.rpm} label="REQ / MIN" />
+                  <UsageBar value={usage.rpd} max={details.rpd} label="REQ / DAY" />
                 </div>
               </div>
             ))}
@@ -708,6 +796,7 @@ console.log(response.text);`;
         </div>
       </div>
 
+      {/* ── Footer ── */}
       <div className="mt-10 pt-6 border-t border-neutral-800/50 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-neutral-600">
         <span className="flex items-center gap-2">
           <span className="relative flex h-2 w-2">
