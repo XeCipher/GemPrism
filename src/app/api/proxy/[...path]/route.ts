@@ -48,38 +48,38 @@ export async function handler(req: Request, { params }: { params: Promise<{ path
     .order('name', { ascending: true }); // Always sort deterministically
 
   const keys = keysData || [];
-  if (keys.length === 0) {
-    return NextResponse.json(
-      { error: 'No API keys have been added to this Gateway account.' },
-      { status: 400 }
-    );
-  }
+  const now = Date.now();
 
-  // Active keys only (Ignore 403 permanently dead keys, but allow exhausted 429 keys sequentially)
-  const activeKeys = keys.filter(k => k.status !== 'dead');
+  // OPTIMIZATION: 15-second micro-cooldown applied to exhausted keys.
+  // This prevents uploading large payloads sequentially to dead keys over and over, killing latency.
+  const activeKeys = keys.filter(k => k.status !== 'dead' && (k.cooldown_until || 0) < now);
+  
   if (activeKeys.length === 0) {
     return NextResponse.json(
-      { error: 'All API keys are marked as dead (403).' },
-      { status: 400 }
+      { error: 'All API keys are exhausted (429) or dead. Please wait a few seconds.' },
+      { status: 429, headers: { 'Retry-After': '15' } }
     );
   }
-
-  // Dynamically fetch models from the first active key and resolve logic
-  const availableModels = await fetchAvailableModels(activeKeys[0].key_value);
-  const currentChain = getFallbackChain(requestedModel, availableModels);
 
   const hasBody = !['GET', 'HEAD', 'OPTIONS'].includes(req.method);
   const originalPayload = hasBody ? await req.arrayBuffer() : undefined;
-
   const todayStr = getQuotaResetDateStr();
-  const now = Date.now();
 
   let lastResponse: NextResponse | null = null;
 
+  // LAZY FETCH OPTIMIZATION: 
+  // We assume the requested model works to avoid blocking the proxy with a Google API call.
+  let chain = [requestedModel]; 
+  let hasFetchedModels = false;
+
   // KEY LOOP: Try keys sequentially
   keyLoop: for (const key of activeKeys) {
+    let mIndex = 0;
+    
     // MODEL LOOP: Sequence through models when facing 500s or 503 Overloaded
-    modelLoop: for (const model of currentChain) {
+    modelLoop: while (mIndex < chain.length) {
+      const model = chain[mIndex];
+
       try {
         const currentUrlPath = urlPath.replace(new RegExp(`(models/)${requestedModel}`), `$1${model}`);
         const targetUrlObj = new URL(`https://generativelanguage.googleapis.com/${currentUrlPath}`);
@@ -126,11 +126,13 @@ export async function handler(req: Request, { params }: { params: Promise<{ path
 
         const status = response.status;
 
-        // Asynchronous telemetry update (we still track usage for the dashboard display)
+        // Asynchronous telemetry update
         Promise.all([
           updateKeyState(key.id, { requests: 1, errors: status >= 400 && status !== 429 ? 1 : 0 }, { 
             last_used: now,
-            ...(status >= 400 ? { last_error: `API Error ${status} on model ${model}` } : {})
+            ...(status === 429 ? { cooldown_until: now + 15000 } : {}), // 15s penalty to stop upload latency
+            ...(status === 403 ? { status: 'dead', last_error: 'API Key Invalid (403)' } : {}),
+            ...(status >= 500 ? { last_error: `API Error ${status} on model ${model}` } : {})
           }),
           recordModelUsage(userId, key.id, model, todayStr)
         ]).catch(err => console.error("[GemPrism] Telemetry error:", err));
@@ -144,25 +146,32 @@ export async function handler(req: Request, { params }: { params: Promise<{ path
         }
 
         if (status === 429) {
-          // Limit exceeded for this key. Skip to next API key immediately (zero cooldown logic)
+          // Limit exceeded for this key. Skip to next API key immediately
           lastResponse = new NextResponse(await response.text(), { status: 429, headers: responseHeaders });
           continue keyLoop;
         }
 
         if (status === 403) {
-          // Invalid key (dead). Mark it definitively and move to next key.
-          await updateKeyState(key.id, {}, { status: 'dead', last_error: 'API Key Invalid (403)' });
+          // Invalid key (dead).
           lastResponse = new NextResponse(await response.text(), { status: 403, headers: responseHeaders });
           continue keyLoop;
         }
 
         if (status === 503 || status >= 500) {
-          // Model Overloaded / Server Error. Stay on the SAME API key, but step down the model chain.
+          // 503 OVERLOADED: Now we fetch models dynamically in the background, only when actually needed.
+          if (!hasFetchedModels) {
+            const availableModels = await fetchAvailableModels(key.key_value);
+            chain = getFallbackChain(requestedModel, availableModels);
+            hasFetchedModels = true;
+          }
+
           const errorBody = await response.text();
           const fallbackHeaders = new Headers(responseHeaders);
           fallbackHeaders.set('X-Gemprism-Fallback', `Failed on ${model} due to ${status}`);
           lastResponse = new NextResponse(errorBody, { status, headers: fallbackHeaders });
-          continue modelLoop;
+          
+          mIndex++;
+          continue modelLoop; // Step down the model chain on the SAME API key
         }
 
         // For any other client error (e.g. 400 Bad Request), don't retry and fail out cleanly.
@@ -171,7 +180,7 @@ export async function handler(req: Request, { params }: { params: Promise<{ path
       } catch (err: any) {
         await updateKeyState(key.id, { errors: 1 }, { last_error: err?.message || 'Network error' });
         lastResponse = NextResponse.json({ error: err?.message || 'Network error' }, { status: 502 });
-        continue keyLoop; // If the network request fails completely for this key, move to next key
+        continue keyLoop; 
       }
     }
   }
