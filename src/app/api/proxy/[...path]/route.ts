@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { after } from 'next/server';
 import { getSupabaseAdminClient } from '@/lib/supabaseAdmin';
 import { fetchAvailableModels, getFallbackChain, getQuotaResetDateStr } from '@/lib/modelLimits';
 
@@ -13,7 +14,9 @@ interface CacheEntry {
 // In-memory cache shared across requests in the same Edge isolate
 const poolCache = new Map<string, CacheEntry>();
 
-export async function handler(req: Request, context: { params: Promise<{ path: string[] }> }) {
+type RouteContext = { params: Promise<{ path: string[] }> };
+
+async function handler(req: Request, context: RouteContext) {
   if (req.method === 'OPTIONS') {
     return new NextResponse(null, { status: 200 });
   }
@@ -156,25 +159,22 @@ export async function handler(req: Request, context: { params: Promise<{ path: s
           key.status = 'dead';
         }
 
-        // Asynchronous telemetry update via fire-and-forget
-        const p = Promise.all([
-          updateKeyState(key, { requests: 1, errors: status >= 400 && status !== 429 ? 1 : 0 }, { 
-            last_used: callTime,
-            ...(status === 429 ? { cooldown_until: callTime + 15000 } : {}), 
-            ...(status === 403 ? { status: 'dead', last_error: 'API Key Invalid (403)' } : {}),
-            ...(status >= 500 ? { last_error: `API Error ${status} on model ${model}` } : {})
-          }),
-          recordModelUsage(userId, key.id, model, todayStr)
-        ]).catch(err => console.error("[GemPrism] Telemetry error:", err));
-
-        // Let the Edge runtime know about the background promise to prevent early termination
-        const reqAny = req as any;
-        const ctxAny = context as any;
-        if (typeof reqAny.waitUntil === 'function') {
-          reqAny.waitUntil(p);
-        } else if (typeof ctxAny.waitUntil === 'function') {
-          ctxAny.waitUntil(p);
-        }
+        // Native Next.js 15+ background task
+        after(async () => {
+          try {
+            await Promise.all([
+              updateKeyState(key, { requests: 1, errors: status >= 400 && status !== 429 ? 1 : 0 }, { 
+                last_used: callTime,
+                ...(status === 429 ? { cooldown_until: callTime + 15000 } : {}), 
+                ...(status === 403 ? { status: 'dead', last_error: 'API Key Invalid (403)' } : {}),
+                ...(status >= 500 ? { last_error: `API Error ${status} on model ${model}` } : {})
+              }),
+              recordModelUsage(userId, key.id, model, todayStr)
+            ]);
+          } catch (err) {
+            console.error("[GemPrism] Telemetry error:", err);
+          }
+        });
 
         if (status === 200) {
           const successHeaders = new Headers(responseHeaders);
@@ -216,16 +216,11 @@ export async function handler(req: Request, context: { params: Promise<{ path: s
         key.total_errors = (key.total_errors || 0) + 1;
         key.last_error = err?.message || 'Network error';
 
-        const pErr = updateKeyState(key, { errors: 1 }, { last_error: err?.message || 'Network error' })
-          .catch(() => {});
-        
-        const reqAny = req as any;
-        const ctxAny = context as any;
-        if (typeof reqAny.waitUntil === 'function') {
-          reqAny.waitUntil(pErr);
-        } else if (typeof ctxAny.waitUntil === 'function') {
-          ctxAny.waitUntil(pErr);
-        }
+        after(async () => {
+          try {
+            await updateKeyState(key, { errors: 1 }, { last_error: err?.message || 'Network error' });
+          } catch (e) {}
+        });
         
         lastResponse = NextResponse.json({ error: err?.message || 'Network error' }, { status: 502 });
         continue keyLoop; 
@@ -236,7 +231,13 @@ export async function handler(req: Request, context: { params: Promise<{ path: s
   return lastResponse || NextResponse.json({ error: 'All available keys failed to process the request.' }, { status: 502 });
 }
 
-export { handler as GET, handler as POST, handler as OPTIONS, handler as PUT, handler as PATCH, handler as DELETE };
+// Next.js compiler requires explicit function exports for App Router API routes to recognize them correctly.
+export async function GET(req: Request, context: RouteContext) { return handler(req, context); }
+export async function POST(req: Request, context: RouteContext) { return handler(req, context); }
+export async function OPTIONS(req: Request, context: RouteContext) { return handler(req, context); }
+export async function PUT(req: Request, context: RouteContext) { return handler(req, context); }
+export async function PATCH(req: Request, context: RouteContext) { return handler(req, context); }
+export async function DELETE(req: Request, context: RouteContext) { return handler(req, context); }
 
 async function updateKeyState(key: any, increments: { requests?: number, errors?: number }, updates: Record<string, unknown>) {
   const admin = getSupabaseAdminClient();
