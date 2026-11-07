@@ -160,7 +160,7 @@ export default function Dashboard() {
     } else {
       setNewKeyName(`Key-${Math.random().toString(36).slice(2, 6).toUpperCase()}`);
       setNewKeyValue("");
-      addToast("API key added successfully", "success");
+      addToast("API key added. Edge sync may take up to 60s.", "success");
       await fetchStats(session);
     }
     setIsAdding(false);
@@ -180,7 +180,7 @@ export default function Dashboard() {
     if (error) {
       addToast("Failed to remove API key", "error");
     } else {
-      addToast("API key removed", "success");
+      addToast("API key removed. Edge sync may take up to 60s.", "success");
       await fetchStats(session);
     }
     setDeletingId(null);

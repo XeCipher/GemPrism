@@ -1,8 +1,7 @@
 import { NextResponse } from 'next/server';
 import { supabaseClient } from '@/lib/supabase';
 
-export const runtime = 'nodejs';
-export const maxDuration = 300; // 5 minutes max duration for free Vercel accounts
+export const runtime = 'edge'; 
 
 export async function GET() {
   try {

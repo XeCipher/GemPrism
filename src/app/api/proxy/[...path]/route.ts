@@ -2,10 +2,18 @@ import { NextResponse } from 'next/server';
 import { getSupabaseAdminClient } from '@/lib/supabaseAdmin';
 import { fetchAvailableModels, getFallbackChain, getQuotaResetDateStr } from '@/lib/modelLimits';
 
-export const runtime = 'nodejs';
-export const maxDuration = 300; 
+export const runtime = 'edge';
 
-export async function handler(req: Request, { params }: { params: Promise<{ path: string[] }> }) {
+interface CacheEntry {
+  userId: string;
+  keys: any[];
+  expires: number;
+}
+
+// In-memory cache shared across requests in the same Edge isolate
+const poolCache = new Map<string, CacheEntry>();
+
+export async function handler(req: Request, context: { params: Promise<{ path: string[] }> }) {
   if (req.method === 'OPTIONS') {
     return new NextResponse(null, { status: 200 });
   }
@@ -22,36 +30,53 @@ export async function handler(req: Request, { params }: { params: Promise<{ path
     return NextResponse.json({ error: 'Missing Gateway Token' }, { status: 401 });
   }
 
-  const admin = getSupabaseAdminClient();
-  const { data: tokenData } = await admin
-    .from('gateway_tokens')
-    .select('user_id')
-    .eq('token', incomingToken)
-    .maybeSingle();
+  const now = Date.now();
+  let userId: string;
+  let keys: any[] = [];
 
-  if (!tokenData) {
-    return NextResponse.json({ error: 'Invalid Gateway Token' }, { status: 401 });
+  // Cleanup to prevent unbounded growth in long-running edge isolates
+  if (poolCache.size > 1000) {
+    for (const [k, v] of poolCache.entries()) {
+      if (v.expires < now) poolCache.delete(k);
+    }
   }
-  const userId = tokenData.user_id;
 
-  const resolvedParams = await params;
+  const cached = poolCache.get(incomingToken);
+  if (cached && cached.expires > now) {
+    userId = cached.userId;
+    keys = cached.keys;
+  } else {
+    const admin = getSupabaseAdminClient();
+    const { data: tokenData } = await admin
+      .from('gateway_tokens')
+      .select('user_id')
+      .eq('token', incomingToken)
+      .maybeSingle();
+
+    if (!tokenData) {
+      return NextResponse.json({ error: 'Invalid Gateway Token' }, { status: 401 });
+    }
+    userId = tokenData.user_id;
+
+    const { data: keysData } = await admin
+      .from('api_keys')
+      .select('*')
+      .eq('user_id', userId)
+      .order('name', { ascending: true }); // Always sort deterministically
+
+    keys = keysData || [];
+    // Cache for 60 seconds to significantly reduce DB latency on sequential API calls
+    poolCache.set(incomingToken, { userId, keys, expires: now + 60000 });
+  }
+
+  const resolvedParams = await context.params;
   const urlPath = resolvedParams.path.join('/');
 
   let requestedModel = 'default';
   const modelMatch = urlPath.match(/models\/([^:]+)/);
   if (modelMatch) requestedModel = modelMatch[1];
 
-  const { data: keysData } = await admin
-    .from('api_keys')
-    .select('*')
-    .eq('user_id', userId)
-    .order('name', { ascending: true }); // Always sort deterministically
-
-  const keys = keysData || [];
-  const now = Date.now();
-
   // OPTIMIZATION: 15-second micro-cooldown applied to exhausted keys.
-  // This prevents uploading large payloads sequentially to dead keys over and over, killing latency.
   const activeKeys = keys.filter(k => k.status !== 'dead' && (k.cooldown_until || 0) < now);
   
   if (activeKeys.length === 0) {
@@ -68,15 +93,12 @@ export async function handler(req: Request, { params }: { params: Promise<{ path
   let lastResponse: NextResponse | null = null;
 
   // LAZY FETCH OPTIMIZATION: 
-  // We assume the requested model works to avoid blocking the proxy with a Google API call.
   let chain = [requestedModel]; 
   let hasFetchedModels = false;
 
-  // KEY LOOP: Try keys sequentially
   keyLoop: for (const key of activeKeys) {
     let mIndex = 0;
     
-    // MODEL LOOP: Sequence through models when facing 500s or 503 Overloaded
     modelLoop: while (mIndex < chain.length) {
       const model = chain[mIndex];
 
@@ -125,17 +147,34 @@ export async function handler(req: Request, { params }: { params: Promise<{ path
         responseHeaders.delete('content-length');
 
         const status = response.status;
+        const callTime = Date.now();
 
-        // Asynchronous telemetry update
-        Promise.all([
-          updateKeyState(key.id, { requests: 1, errors: status >= 400 && status !== 429 ? 1 : 0 }, { 
-            last_used: now,
-            ...(status === 429 ? { cooldown_until: now + 15000 } : {}), // 15s penalty to stop upload latency
+        // Immediate Local State Update for subsequent requests hitting this Edge isolate
+        if (status === 429) {
+          key.cooldown_until = callTime + 15000;
+        } else if (status === 403) {
+          key.status = 'dead';
+        }
+
+        // Asynchronous telemetry update via fire-and-forget
+        const p = Promise.all([
+          updateKeyState(key, { requests: 1, errors: status >= 400 && status !== 429 ? 1 : 0 }, { 
+            last_used: callTime,
+            ...(status === 429 ? { cooldown_until: callTime + 15000 } : {}), 
             ...(status === 403 ? { status: 'dead', last_error: 'API Key Invalid (403)' } : {}),
             ...(status >= 500 ? { last_error: `API Error ${status} on model ${model}` } : {})
           }),
           recordModelUsage(userId, key.id, model, todayStr)
         ]).catch(err => console.error("[GemPrism] Telemetry error:", err));
+
+        // Let the Edge runtime know about the background promise to prevent early termination
+        const reqAny = req as any;
+        const ctxAny = context as any;
+        if (typeof reqAny.waitUntil === 'function') {
+          reqAny.waitUntil(p);
+        } else if (typeof ctxAny.waitUntil === 'function') {
+          ctxAny.waitUntil(p);
+        }
 
         if (status === 200) {
           const successHeaders = new Headers(responseHeaders);
@@ -146,19 +185,16 @@ export async function handler(req: Request, { params }: { params: Promise<{ path
         }
 
         if (status === 429) {
-          // Limit exceeded for this key. Skip to next API key immediately
           lastResponse = new NextResponse(await response.text(), { status: 429, headers: responseHeaders });
           continue keyLoop;
         }
 
         if (status === 403) {
-          // Invalid key (dead).
           lastResponse = new NextResponse(await response.text(), { status: 403, headers: responseHeaders });
           continue keyLoop;
         }
 
         if (status === 503 || status >= 500) {
-          // 503 OVERLOADED: Now we fetch models dynamically in the background, only when actually needed.
           if (!hasFetchedModels) {
             const availableModels = await fetchAvailableModels(key.key_value);
             chain = getFallbackChain(requestedModel, availableModels);
@@ -171,14 +207,26 @@ export async function handler(req: Request, { params }: { params: Promise<{ path
           lastResponse = new NextResponse(errorBody, { status, headers: fallbackHeaders });
           
           mIndex++;
-          continue modelLoop; // Step down the model chain on the SAME API key
+          continue modelLoop; 
         }
 
-        // For any other client error (e.g. 400 Bad Request), don't retry and fail out cleanly.
         return new NextResponse(response.body, { status, headers: responseHeaders });
 
       } catch (err: any) {
-        await updateKeyState(key.id, { errors: 1 }, { last_error: err?.message || 'Network error' });
+        key.total_errors = (key.total_errors || 0) + 1;
+        key.last_error = err?.message || 'Network error';
+
+        const pErr = updateKeyState(key, { errors: 1 }, { last_error: err?.message || 'Network error' })
+          .catch(() => {});
+        
+        const reqAny = req as any;
+        const ctxAny = context as any;
+        if (typeof reqAny.waitUntil === 'function') {
+          reqAny.waitUntil(pErr);
+        } else if (typeof ctxAny.waitUntil === 'function') {
+          ctxAny.waitUntil(pErr);
+        }
+        
         lastResponse = NextResponse.json({ error: err?.message || 'Network error' }, { status: 502 });
         continue keyLoop; 
       }
@@ -190,15 +238,20 @@ export async function handler(req: Request, { params }: { params: Promise<{ path
 
 export { handler as GET, handler as POST, handler as OPTIONS, handler as PUT, handler as PATCH, handler as DELETE };
 
-async function updateKeyState(id: string, increments: { requests?: number, errors?: number }, updates: Record<string, unknown>) {
+async function updateKeyState(key: any, increments: { requests?: number, errors?: number }, updates: Record<string, unknown>) {
   const admin = getSupabaseAdminClient();
-  const { data: current } = await admin.from('api_keys').select('total_requests, total_errors').eq('id', id).maybeSingle();
   
   const finalUpdates: Record<string, unknown> = { ...updates };
-  if (increments.requests) finalUpdates.total_requests = (current?.total_requests || 0) + increments.requests;
-  if (increments.errors)   finalUpdates.total_errors   = (current?.total_errors || 0) + increments.errors;
+  if (increments.requests) {
+    key.total_requests = (key.total_requests || 0) + increments.requests;
+    finalUpdates.total_requests = key.total_requests;
+  }
+  if (increments.errors) {
+    key.total_errors = (key.total_errors || 0) + increments.errors;
+    finalUpdates.total_errors = key.total_errors;
+  }
 
-  const { error } = await admin.from('api_keys').update(finalUpdates).eq('id', id);
+  const { error } = await admin.from('api_keys').update(finalUpdates).eq('id', key.id);
   if (error) console.error('[GemPrism] updateKeyState failed:', error.message);
 }
 
