@@ -1,30 +1,23 @@
 export const MODEL_ALIASES: Record<string, string> = {
-  "gemini-flash-latest":      "gemini-3.8-flash",
-  "gemini-flash-lite-latest": "gemini-3.5-flash-lite",
-  "gemini-pro-latest":        "gemini-4-argon",
-  "gemini-2.5-pro":           "gemini-3.8-flash",
-  "gemini-2.5-flash":         "gemini-3.5-flash-lite",
-  "gemini-omni-1.1-flash":    "gemini-omni-1.2-flash"
+  "gemini-flash-latest":      "gemini-3.5-flash",
+  "gemini-flash-lite-latest": "gemini-3.1-flash-lite",
+  "gemini-pro-latest":        "gemini-3.1-pro-preview"
 };
 
 /**
  * Intelligent degradation chains for 503 Overloaded fallback mechanism.
- * Flash falls back to older Flash, Lite to Lite, Pro/Argon to Pro.
+ * Flash falls back to older Flash, Lite to Lite, Pro to Pro.
  * Uses exact API model identifiers.
  */
 export const MODEL_FALLBACKS: Record<string, string[]> = {
-  "gemini-4-argon":               ["gemini-3.8-flash", "gemini-3.5-flash"],
-  "gemini-3.8-flash":             ["gemini-3.6-flash", "gemini-3.5-flash"],
-  "gemini-3.6-flash":             ["gemini-3.5-flash", "gemini-3-flash-preview"],
-  "gemini-3.5-flash":             ["gemini-3-flash-preview", "gemini-2.5-flash", "gemini-2.0-flash"],
-  "gemini-3-flash-preview":       ["gemini-2.5-flash", "gemini-2.0-flash"],
-  "gemini-3.5-flash-lite":        ["gemini-3.1-flash-lite", "gemini-2.5-flash-lite"],
-  "gemini-3.1-flash-lite":        ["gemini-3.1-flash-lite-preview", "gemini-2.5-flash-lite", "gemini-2.0-flash-lite"],
+  "gemini-3.5-flash":           ["gemini-3-flash-preview", "gemini-2.5-flash", "gemini-2.0-flash"],
+  "gemini-3-flash-preview":     ["gemini-2.5-flash", "gemini-2.0-flash"],
+  "gemini-3.1-flash-lite":      ["gemini-3.1-flash-lite-preview", "gemini-2.5-flash-lite", "gemini-2.0-flash-lite"],
   "gemini-3.1-flash-lite-preview":["gemini-2.5-flash-lite", "gemini-2.0-flash-lite"],
-  "gemini-2.5-flash":             ["gemini-2.0-flash", "gemini-2.0-flash-001"],
-  "gemini-2.5-flash-lite":        ["gemini-2.0-flash-lite", "gemini-2.0-flash-lite-001"],
-  "gemini-3.1-pro-preview":       ["gemini-3-pro-preview", "gemini-2.5-pro"],
-  "gemini-3-pro-preview":         ["gemini-2.5-pro"],
+  "gemini-2.5-flash":           ["gemini-2.0-flash", "gemini-2.0-flash-001"],
+  "gemini-2.5-flash-lite":      ["gemini-2.0-flash-lite", "gemini-2.0-flash-lite-001"],
+  "gemini-3.1-pro-preview":     ["gemini-3-pro-preview", "gemini-2.5-pro"],
+  "gemini-3-pro-preview":       ["gemini-2.5-pro"],
 };
 
 /**
@@ -55,24 +48,10 @@ export const ALL_MODELS: Record<string, { name: string; rpm: number; rpd: number
   "gemini-embedding-2-preview":           { name: "Gemini Embedding 2 Preview",                   rpm:    100, rpd:   1000 },
   "aqa":                                  { name: "Attributed Question Answering",                rpm:      0, rpd:      0 },
   
-  // Gemini 4 Generation
-  "gemini-4-argon":                       { name: "Gemini 4 Argon",                               rpm:      0, rpd:      0 },
-  "gemini-carbon":                        { name: "Gemini Carbon",                                rpm:      0, rpd:      0 },
-
-  // Gemini 3.8 Generation
-  "gemini-3.8-flash":                     { name: "Gemini 3.8 Flash",                             rpm:      5, rpd:     20 },
-  "gemini-3.8-flash-tts":                 { name: "Gemini 3.8 Flash TTS",                         rpm:      3, rpd:     10 },
-  "gemini-3.8-flash-lite-tts":            { name: "Gemini 3.8 Flash-Lite TTS",                    rpm:      3, rpd:     10 },
-
-  // Gemini 3.6 Generation
-  "gemini-3.6-flash":                     { name: "Gemini 3.6 Flash",                             rpm:      5, rpd:     20 },
-
   // Gemini 3.5 Generation
   "gemini-3.5-flash":                     { name: "Gemini 3.5 Flash",                             rpm:      5, rpd:     20 },
-  "gemini-3.5-flash-lite":                { name: "Gemini 3.5 Flash-Lite",                        rpm:     15, rpd:    500 },
 
   // Gemini Omni
-  "gemini-omni-1.2-flash":                { name: "Gemini Omni 1.2 Flash",                        rpm:      0, rpd:      0 },
   "gemini-omni-flash-preview":            { name: "Gemini Omni Flash Preview",                    rpm:      5, rpd:     20 },
 
   // Gemini 3.1 Generation
@@ -128,7 +107,6 @@ export const ALL_MODELS: Record<string, { name: string; rpm: number; rpd: number
   // Lyria
   "lyria-3-clip-preview":                 { name: "Lyria 3 Clip Preview",                         rpm:      0, rpd:      0 },
   "lyria-3-pro-preview":                  { name: "Lyria 3 Pro Preview",                          rpm:      0, rpd:      0 },
-  "lyria-3.5":                            { name: "Lyria 3.5",                                    rpm:      0, rpd:      0 },
 
   // Veo
   "veo-3.1-generate-preview":             { name: "Veo 3.1",                                      rpm:      0, rpd:      0 },
