@@ -13,7 +13,7 @@ import type { Session } from "@supabase/supabase-js";
 import { Check, AlertCircle, Activity } from "lucide-react";
 import { supabaseClient } from "@/lib/supabase";
 import type { CatalogMetadata, ModelCatalogItem } from "@/lib/geminiModels";
-import type { RequestTrace, TraceStorageMode } from "@/lib/requestTraces";
+import type { RequestTrace } from "@/lib/requestTraces";
 import type {
   DashboardCooldownItem,
   DashboardKeyItem,
@@ -37,7 +37,8 @@ export interface DashboardPayload {
   usage: DashboardUsageItem[];
   cooldowns: DashboardCooldownItem[];
   traces: RequestTrace[];
-  traceStorageMode: TraceStorageMode;
+  tracesTotal: number;
+  tracesHasMore: boolean;
   todayStr: string;
   summary: {
     total_requests: number;
@@ -175,17 +176,14 @@ export function DashboardProvider({ children }: { children: React.ReactNode }) {
           });
 
           if (forceSyncModels) {
-            addToast(
-              `Synced ${json.models.length} models (${json.catalogMeta.source === "live" ? "live API" : "fallback catalog"})`,
-              "success"
-            );
+            addToast(`Synced ${json.models.length} models`, "success");
           }
         } else if (res.status === 401) {
           await supabaseClient.auth.signOut();
           router.push("/login");
         }
       } catch {
-        if (!quiet) addToast("Failed to fetch stats", "error");
+        if (!quiet) addToast("Failed to refresh dashboard data", "error");
       } finally {
         fetchInFlightRef.current = false;
       }
@@ -219,7 +217,7 @@ export function DashboardProvider({ children }: { children: React.ReactNode }) {
     };
   }, [router]);
 
-  // Live Supabase Realtime WebSocket stream + visibility-aware RPM decay sync
+  // Live Supabase Realtime stream + visibility-aware RPM decay sync
   useEffect(() => {
     if (!session) return;
 
@@ -243,15 +241,6 @@ export function DashboardProvider({ children }: { children: React.ReactNode }) {
       }, 300);
     };
 
-    const markRealtimeVerified = () => {
-      if (!realtimeVerifiedRef.current) {
-        realtimeVerifiedRef.current = true;
-        setRealtimeVerified(true);
-        // Once WebSocket push is verified, slow the background RPM-decay sync
-        startBackgroundSync(15_000);
-      }
-    };
-
     const startBackgroundSync = (intervalMs: number) => {
       if (syncIntervalId) clearInterval(syncIntervalId);
       syncIntervalId = setInterval(() => {
@@ -259,6 +248,14 @@ export function DashboardProvider({ children }: { children: React.ReactNode }) {
           void performFetch(session, true, false);
         }
       }, intervalMs);
+    };
+
+    const markRealtimeVerified = () => {
+      if (!realtimeVerifiedRef.current) {
+        realtimeVerifiedRef.current = true;
+        setRealtimeVerified(true);
+        startBackgroundSync(15_000);
+      }
     };
 
     void supabaseClient.realtime.setAuth(session.access_token);
@@ -307,11 +304,16 @@ export function DashboardProvider({ children }: { children: React.ReactNode }) {
             setNowMs(Date.now());
             setData((prev) => {
               if (!prev) return prev;
+              const alreadyExists = prev.traces.some((t) => t.id === incomingTrace.id);
               const nextTraces = [
                 incomingTrace,
                 ...prev.traces.filter((t) => t.id !== incomingTrace.id),
               ].slice(0, 30);
-              return { ...prev, traces: nextTraces };
+              return {
+                ...prev,
+                traces: nextTraces,
+                tracesTotal: alreadyExists ? prev.tracesTotal : prev.tracesTotal + 1,
+              };
             });
           }
           scheduleDebouncedSync();
@@ -328,7 +330,6 @@ export function DashboardProvider({ children }: { children: React.ReactNode }) {
         }
       });
 
-    // Fast fallback sync when Realtime events aren't flowing yet, slowing to 15s once verified
     startBackgroundSync(realtimeVerifiedRef.current ? 15_000 : 3_000);
 
     const handleVisibilityChange = () => {
@@ -364,7 +365,7 @@ export function DashboardProvider({ children }: { children: React.ReactNode }) {
         return false;
       }
 
-      addToast("API key added — syncing live models…", "success");
+      addToast("API key added — syncing models…", "success");
       await performFetch(session, false, true);
       return true;
     },
@@ -457,7 +458,17 @@ export function DashboardProvider({ children }: { children: React.ReactNode }) {
         addToast("Failed to clear request history", "error");
         return false;
       }
-      addToast("Request trace history cleared", "success");
+      setData((prev) =>
+        prev
+          ? {
+              ...prev,
+              traces: [],
+              tracesTotal: 0,
+              tracesHasMore: false,
+            }
+          : prev
+      );
+      addToast("Request history cleared", "success");
       await performFetch(session, true, false);
       return true;
     } catch {

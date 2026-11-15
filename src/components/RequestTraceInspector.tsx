@@ -5,6 +5,7 @@ import Link from "next/link";
 import {
   Activity,
   ArrowRight,
+  ArrowDown,
   CheckCircle2,
   Clock,
   AlertTriangle,
@@ -118,7 +119,7 @@ function getHopBadgeStyle(outcome: HopOutcome): { label: string; className: stri
       };
     case "dead_key":
       return {
-        label: "Dead Key",
+        label: "Invalid Key",
         className: "bg-red-500/15 text-red-400 border-red-500/30",
         barColor: "#ef4444",
       };
@@ -206,14 +207,14 @@ export function LatestRequestSnapshotCard({
               href="/dashboard/requests"
               className="text-xs text-emerald-400 hover:text-emerald-300 font-medium flex items-center gap-1"
             >
-              Request Inspector <ArrowRight size={13} />
+              Request History <ArrowRight size={13} />
             </Link>
           </div>
           <div className="py-10 px-4 text-center border border-dashed border-neutral-800 rounded-xl">
             <Activity size={26} className="mx-auto text-neutral-600 mb-2" />
-            <p className="text-xs font-medium text-neutral-300">No requests traced yet</p>
+            <p className="text-xs font-medium text-neutral-300">No requests recorded yet</p>
             <p className="text-[11px] text-neutral-500 mt-1 max-w-xs mx-auto">
-              Send a Gemini API request through your Gateway Token to inspect exact failover chains,
+              Send a Gemini API request through your Gateway Token to inspect routing chains,
               timing splits, and arrival timestamps here.
             </p>
           </div>
@@ -317,7 +318,7 @@ export function LatestRequestSnapshotCard({
         {trace.modelsTraversed.length > 0 && (
           <div className="mb-3">
             <div className="text-[10px] uppercase tracking-wider text-neutral-500 font-semibold mb-1.5">
-              Model Chain Traversed ({trace.modelsTraversed.length})
+              Model Chain Evaluated ({trace.modelsTraversed.length})
             </div>
             <div className="flex flex-wrap items-center gap-1.5">
               {trace.modelsTraversed.slice(0, 6).map((step, i) => {
@@ -361,21 +362,21 @@ export function LatestRequestSnapshotCard({
             <div
               className="h-full bg-amber-500"
               style={{ width: `${Math.max(2, failPct)}%` }}
-              title={`Failed retries: ${trace.phases.upstreamFailedMs} ms`}
+              title={`Retries: ${trace.phases.upstreamFailedMs} ms`}
             />
           )}
           {trace.phases.upstreamSettledMs > 0 && (
             <div
               className="h-full bg-emerald-500"
               style={{ width: `${Math.max(2, okPct)}%` }}
-              title={`Winning upstream: ${trace.phases.upstreamSettledMs} ms`}
+              title={`Response time: ${trace.phases.upstreamSettledMs} ms`}
             />
           )}
         </div>
         <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-neutral-400 font-[family-name:var(--font-mono)]">
           <span>Gateway: {trace.phases.gatewayOverheadMs}ms</span>
           <span>Retries: {trace.phases.upstreamFailedMs}ms</span>
-          <span className="text-emerald-400">Settled: {trace.phases.upstreamSettledMs}ms</span>
+          <span className="text-emerald-400">Response: {trace.phases.upstreamSettledMs}ms</span>
         </div>
       </div>
     </div>
@@ -423,8 +424,8 @@ export function RequestTraceDetail({
   let summarySentence = "";
   if (trace.isPassthrough) {
     summarySentence = trace.success
-      ? `Passthrough request served directly via ${trace.settledKeyName || "key pool"} in ${formatDurationMs(trace.totalDurationMs)}.`
-      : `Passthrough request failed with HTTP ${trace.statusCode}.`;
+      ? `Direct API call served via ${trace.settledKeyName || "your key pool"} in ${formatDurationMs(trace.totalDurationMs)}.`
+      : `Request failed with HTTP ${trace.statusCode}.`;
   } else if (trace.fallbackType === "direct") {
     summarySentence = `No fallback needed — served directly by ${trace.settledModel} via ${trace.settledKeyName} on the first attempt.`;
   } else if (trace.fallbackType === "key_failover") {
@@ -434,7 +435,7 @@ export function RequestTraceDetail({
       trace.resolvedModel !== trace.requestedModel ? ` (resolved to ${trace.resolvedModel})` : ""
     }, stepped through ${trace.modelsTraversed.length} models, and settled on ${trace.settledModel} via ${trace.settledKeyName}.`;
   } else {
-    summarySentence = `Request failed (${trace.statusCode}) after evaluating ${trace.modelsTraversed.length} model(s) and ${attemptHops.length} upstream attempt(s).`;
+    summarySentence = `Request failed (${trace.statusCode}) after evaluating ${trace.modelsTraversed.length} model(s) and ${attemptHops.length} attempt(s).`;
   }
 
   return (
@@ -467,7 +468,7 @@ export function RequestTraceDetail({
             </span>
             {trace.isStreaming && (
               <span className="px-2 py-1 rounded-lg border border-cyan-500/30 bg-cyan-500/10 text-cyan-300 text-[11px] font-semibold">
-                SSE Stream
+                Streaming
               </span>
             )}
           </div>
@@ -476,7 +477,7 @@ export function RequestTraceDetail({
             <div className="text-lg sm:text-xl font-bold text-white font-[family-name:var(--font-mono)] tabular-nums">
               {formatDurationMs(trace.totalDurationMs)}
             </div>
-            <div className="text-[11px] text-neutral-500">Total overall duration</div>
+            <div className="text-[11px] text-neutral-500">Total duration</div>
           </div>
         </div>
 
@@ -547,7 +548,7 @@ export function RequestTraceDetail({
 
           <div className="bg-[#0d0d0d] border border-neutral-800 rounded-xl p-3.5">
             <div className="text-[10px] uppercase tracking-wider text-neutral-500 mb-1">
-              Fallback &amp; Hops
+              Fallback &amp; Attempts
             </div>
             <div className="text-sm font-semibold text-white">
               {trace.didFallback ? "Yes — Failover Active" : "No — Direct"}
@@ -565,13 +566,13 @@ export function RequestTraceDetail({
               {trace.totalDurationMs.toLocaleString()} ms
             </div>
             <div className="text-[11px] text-neutral-400 mt-1 font-[family-name:var(--font-mono)]">
-              {trace.isStreaming ? "Time to stream open" : "End-to-end proxy"}
+              {trace.isStreaming ? "Time to first byte" : "Full request"}
             </div>
           </div>
         </div>
       </div>
 
-      {/* 2. Timing Breakdown ("How Much Time It Took Where") */}
+      {/* 2. Timing Breakdown */}
       <div className="bg-[#0a0a0a] border border-neutral-800 rounded-2xl p-5 shadow-xl">
         <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
           <div>
@@ -580,7 +581,7 @@ export function RequestTraceDetail({
               Where Time Was Spent
             </h3>
             <p className="text-xs text-neutral-500 mt-0.5">
-              Exact latency split between GemPrism proxy processing, failed retries, and the winning upstream model.
+              Breakdown between gateway routing, retries, and the winning model response.
             </p>
           </div>
           <span className="text-xs font-[family-name:var(--font-mono)] text-white font-semibold">
@@ -601,14 +602,14 @@ export function RequestTraceDetail({
             <div
               className="h-full bg-amber-500"
               style={{ width: `${Math.max(1.5, failPct)}%` }}
-              title={`Failed retries: ${trace.phases.upstreamFailedMs} ms`}
+              title={`Retries: ${trace.phases.upstreamFailedMs} ms`}
             />
           )}
           {trace.phases.upstreamSettledMs > 0 && (
             <div
               className="h-full bg-emerald-500"
               style={{ width: `${Math.max(1.5, okPct)}%` }}
-              title={`Winning upstream: ${trace.phases.upstreamSettledMs} ms`}
+              title={`Settled model: ${trace.phases.upstreamSettledMs} ms`}
             />
           )}
         </div>
@@ -628,7 +629,7 @@ export function RequestTraceDetail({
           <div className="bg-[#0d0d0d] border border-neutral-800/80 rounded-xl p-3">
             <div className="flex items-center gap-1.5 text-neutral-400 mb-1">
               <span className="w-2 h-2 rounded-full bg-violet-400" />
-              <span className="text-[11px]">Pool DB Load</span>
+              <span className="text-[11px]">Key Lookup</span>
             </div>
             <div className="font-[family-name:var(--font-mono)] font-semibold text-white tabular-nums">
               {trace.phases.poolFetchMs} ms
@@ -638,7 +639,7 @@ export function RequestTraceDetail({
           <div className="bg-[#0d0d0d] border border-neutral-800/80 rounded-xl p-3">
             <div className="flex items-center gap-1.5 text-neutral-400 mb-1">
               <span className="w-2 h-2 rounded-full bg-violet-400" />
-              <span className="text-[11px]">Discovery</span>
+              <span className="text-[11px]">Model Sync</span>
             </div>
             <div className="font-[family-name:var(--font-mono)] font-semibold text-white tabular-nums">
               {trace.phases.discoveryMs} ms
@@ -648,7 +649,7 @@ export function RequestTraceDetail({
           <div className="bg-[#0d0d0d] border border-neutral-800/80 rounded-xl p-3">
             <div className="flex items-center gap-1.5 text-neutral-400 mb-1">
               <span className="w-2 h-2 rounded-full bg-violet-500" />
-              <span className="text-[11px]">Proxy Routing</span>
+              <span className="text-[11px]">Routing</span>
             </div>
             <div className="font-[family-name:var(--font-mono)] font-semibold text-white tabular-nums">
               {otherGatewayMs} ms
@@ -658,7 +659,7 @@ export function RequestTraceDetail({
           <div className="bg-[#0d0d0d] border border-neutral-800/80 rounded-xl p-3">
             <div className="flex items-center gap-1.5 text-amber-300 mb-1">
               <span className="w-2 h-2 rounded-full bg-amber-500" />
-              <span className="text-[11px]">Failed Hops</span>
+              <span className="text-[11px]">Retries</span>
             </div>
             <div className="font-[family-name:var(--font-mono)] font-semibold text-amber-300 tabular-nums">
               {trace.phases.upstreamFailedMs} ms
@@ -669,7 +670,7 @@ export function RequestTraceDetail({
             <div className="flex items-center gap-1.5 text-emerald-300 mb-1">
               <span className="w-2 h-2 rounded-full bg-emerald-500" />
               <span className="text-[11px]">
-                {trace.isStreaming ? "Stream TTFB" : "Settled Model"}
+                {trace.isStreaming ? "First Byte" : "Settled Model"}
               </span>
             </div>
             <div className="font-[family-name:var(--font-mono)] font-semibold text-emerald-400 tabular-nums">
@@ -689,7 +690,7 @@ export function RequestTraceDetail({
                 Complete Model Chain Evaluated
               </h3>
               <p className="text-xs text-neutral-500 mt-0.5">
-                Every model the router stepped through in exact order until settlement.
+                Every model the router evaluated in order until the request settled.
               </p>
             </div>
             {remainingPlanned.length > 0 && (
@@ -705,12 +706,14 @@ export function RequestTraceDetail({
             )}
           </div>
 
-          <div className="flex flex-wrap items-stretch gap-2">
+          <div className="flex flex-col sm:flex-row sm:flex-wrap items-stretch gap-2">
             {trace.modelsTraversed.map((step, idx) => {
               const st = getModelStepStyle(step.status);
               return (
                 <React.Fragment key={`${step.model}_${idx}`}>
-                  <div className={`rounded-xl border px-3.5 py-2.5 min-w-[165px] max-w-full ${st.border}`}>
+                  <div
+                    className={`rounded-xl border px-3.5 py-2.5 w-full sm:w-auto sm:min-w-[165px] max-w-full ${st.border}`}
+                  >
                     <div className="flex items-center justify-between gap-2 mb-1">
                       <span className="inline-flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider">
                         <span className={`w-1.5 h-1.5 rounded-full ${st.dot}`} />
@@ -733,7 +736,8 @@ export function RequestTraceDetail({
                   </div>
                   {idx < trace.modelsTraversed.length - 1 && (
                     <div className="flex items-center justify-center text-neutral-600 px-0.5">
-                      <ArrowRight size={14} />
+                      <ArrowDown size={14} className="sm:hidden" />
+                      <ArrowRight size={14} className="hidden sm:block" />
                     </div>
                   )}
                 </React.Fragment>
@@ -772,7 +776,7 @@ export function RequestTraceDetail({
               Attempt-by-Attempt Waterfall Timeline
             </h3>
             <p className="text-xs text-neutral-500 mt-0.5">
-              Chronological trace of every upstream call and pre-flight skip from +0 ms to +{trace.totalDurationMs} ms.
+              Chronological trace of every attempt and skip from +0 ms to +{trace.totalDurationMs} ms.
             </p>
           </div>
 
@@ -838,7 +842,7 @@ export function RequestTraceDetail({
                   </div>
                 </div>
 
-                {/* Gantt Position Bar */}
+                {/* Waterfall Position Bar */}
                 <div className="h-2 w-full bg-neutral-900 rounded-full overflow-hidden relative mb-1.5">
                   <div
                     className="h-full rounded-full absolute top-0"

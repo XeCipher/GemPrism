@@ -1,6 +1,10 @@
 import { NextResponse } from "next/server";
 import { getSupabaseAdminClient } from "@/lib/supabaseAdmin";
-import { clearRequestTraces, getRecentRequestTraces } from "@/lib/requestTraces";
+import {
+  clearRequestTraces,
+  getRequestTracesPage,
+  type RequestTraceFilter,
+} from "@/lib/requestTraces";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -22,8 +26,27 @@ export async function GET(req: Request) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const result = await getRecentRequestTraces(userId, 40);
-    return NextResponse.json(result);
+    const url = new URL(req.url);
+    const rawLimit = Number(url.searchParams.get("limit") || "40");
+    const rawOffset = Number(url.searchParams.get("offset") || "0");
+    const rawFilter = url.searchParams.get("filter");
+    const search = url.searchParams.get("q") || "";
+
+    const filter: RequestTraceFilter =
+      rawFilter === "fallbacks" || rawFilter === "errors" ? rawFilter : "all";
+
+    const result = await getRequestTracesPage(userId, {
+      limit: Number.isFinite(rawLimit) ? rawLimit : 40,
+      offset: Number.isFinite(rawOffset) ? rawOffset : 0,
+      filter,
+      search,
+    });
+
+    return NextResponse.json({
+      traces: result.traces,
+      total: result.total,
+      hasMore: result.hasMore,
+    });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : "Unknown error";
     return NextResponse.json({ error: message }, { status: 500 });

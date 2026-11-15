@@ -5,6 +5,7 @@ export const TRACE_PREFIX = "__trace:";
 
 export type TraceFallbackType = "direct" | "key_failover" | "model_fallback" | "failed";
 export type TraceStorageMode = "request_logs" | "compat";
+export type RequestTraceFilter = "all" | "fallbacks" | "errors";
 
 export type HopOutcome =
   | "success"
@@ -73,6 +74,20 @@ export interface RequestTrace {
   modelsTraversed: RequestModelStep[];
   hops: RequestHop[];
   errorSummary: string | null;
+}
+
+export interface RequestTraceQueryOptions {
+  limit?: number;
+  offset?: number;
+  filter?: RequestTraceFilter;
+  search?: string;
+}
+
+export interface RequestTracePageResult {
+  traces: RequestTrace[];
+  total: number;
+  hasMore: boolean;
+  storageMode: TraceStorageMode;
 }
 
 interface CompactHop {
@@ -151,9 +166,10 @@ function isMissingTableError(error: { code?: string; message?: string } | null):
   return (
     code === "42P01" ||
     code === "PGRST205" ||
-    msg.includes("request_logs") ||
-    msg.includes("does not exist") ||
-    msg.includes("schema cache")
+    (msg.includes("request_logs") &&
+      (msg.includes("does not exist") ||
+        msg.includes("could not find") ||
+        msg.includes("schema cache")))
   );
 }
 
@@ -162,10 +178,28 @@ function truncateText(value: string, maxLen: number): string {
   return `${value.slice(0, Math.max(0, maxLen - 1))}…`;
 }
 
+function matchesTraceQuery(
+  trace: RequestTrace,
+  filter: RequestTraceFilter,
+  searchLower: string
+): boolean {
+  if (filter === "fallbacks" && !trace.didFallback) return false;
+  if (filter === "errors" && trace.success) return false;
+
+  if (searchLower) {
+    const haystack = `${trace.requestedModel} ${trace.resolvedModel} ${trace.settledModel || ""} ${
+      trace.settledKeyName || ""
+    } ${trace.endpointPath}`.toLowerCase();
+    if (!haystack.includes(searchLower)) return false;
+  }
+
+  return true;
+}
+
 /**
  * Serializes a trace into <= 1600 UTF-8 characters so it safely fits inside
  * PostgreSQL's unique B-tree index on model_usage(api_key_id, model_name)
- * whenever the optional request_logs table hasn't been created yet.
+ * if the request_logs table hasn't been created yet.
  */
 function buildCompatModelName(trace: RequestTrace): string {
   const basePrefix = `${TRACE_PREFIX}${trace.id}:`;
@@ -334,7 +368,7 @@ export async function saveRequestTrace(
     }
   }
 
-  // Transparent compat fallback in model_usage when request_logs table does not exist yet
+  // Fallback into model_usage only when request_logs table is absent
   if (!fallbackKeyId) return;
 
   const compatName = buildCompatModelName(trace);
@@ -358,7 +392,6 @@ export async function saveRequestTrace(
     return;
   }
 
-  // Keep only the newest MAX_COMPAT_DB_TRACES fallback rows per user
   const { data: existingCompat } = await admin
     .from("model_usage")
     .select("id, rpm_window_start")
@@ -376,72 +409,187 @@ export async function saveRequestTrace(
   }
 }
 
-export async function getRecentRequestTraces(
+export async function getRequestTracesPage(
   userId: string,
-  limit: number = 30
-): Promise<{ traces: RequestTrace[]; storageMode: TraceStorageMode }> {
+  options: RequestTraceQueryOptions = {}
+): Promise<RequestTracePageResult> {
+  const limit = Math.min(Math.max(1, Math.floor(options.limit ?? 30)), 100);
+  const offset = Math.max(0, Math.floor(options.offset ?? 0));
+  const filter: RequestTraceFilter =
+    options.filter === "fallbacks" || options.filter === "errors" ? options.filter : "all";
+  const rawSearch = (options.search ?? "").trim();
+  const searchLower = rawSearch.toLowerCase();
+
   const admin = getSupabaseAdminClient();
   const hotTraces = getHotTraceStore().get(userId) || [];
-  const merged = new Map<string, RequestTrace>();
 
-  for (const t of hotTraces) {
-    merged.set(t.id, t);
-  }
-
-  let storageMode: TraceStorageMode = "compat";
   const tableStatus = traceGlobal.__gemprismRequestLogsStatus;
   const shouldTryTable =
     !tableStatus || tableStatus.available || Date.now() - tableStatus.checkedAt > 60_000;
 
   if (shouldTryTable) {
-    const { data, error } = await admin
+    const safeSearch = rawSearch.replace(/[%_*,()"'\\]/g, "").trim();
+
+    if (rawSearch && !safeSearch) {
+      traceGlobal.__gemprismRequestLogsStatus = { available: true, checkedAt: Date.now() };
+      return { traces: [], total: 0, hasMore: false, storageMode: "request_logs" };
+    }
+
+    let query = admin
       .from("request_logs")
-      .select("trace_data")
-      .eq("user_id", userId)
+      .select("trace_data", { count: "exact" })
+      .eq("user_id", userId);
+
+    if (filter === "fallbacks") {
+      query = query.contains("trace_data", { didFallback: true });
+    } else if (filter === "errors") {
+      query = query.contains("trace_data", { success: false });
+    }
+
+    if (safeSearch) {
+      const pattern = `"*${safeSearch}*"`;
+      query = query.or(
+        [
+          `trace_data->>requestedModel.ilike.${pattern}`,
+          `trace_data->>resolvedModel.ilike.${pattern}`,
+          `trace_data->>settledModel.ilike.${pattern}`,
+          `trace_data->>settledKeyName.ilike.${pattern}`,
+          `trace_data->>endpointPath.ilike.${pattern}`,
+        ].join(",")
+      );
+    }
+
+    const { data, error, count } = await query
       .order("received_at", { ascending: false })
-      .limit(limit);
+      .order("id", { ascending: false })
+      .range(offset, offset + limit - 1);
 
     if (!error && Array.isArray(data)) {
       traceGlobal.__gemprismRequestLogsStatus = { available: true, checkedAt: Date.now() };
-      storageMode = "request_logs";
 
+      const dbTraces: RequestTrace[] = [];
       for (const row of data) {
         const t = row.trace_data as RequestTrace | null;
-        if (!t || !t.id) continue;
-        const existing = merged.get(t.id);
-        if (!existing || t.hops.length > existing.hops.length) {
-          merged.set(t.id, t);
+        if (t && t.id) dbTraces.push(t);
+      }
+
+      let finalTraces = dbTraces;
+      let finalTotal = count ?? dbTraces.length;
+
+      // Include freshly finished in-memory traces that are still flushing via after()
+      if (offset === 0) {
+        const now = Date.now();
+        const dbIds = new Set(dbTraces.map((t) => t.id));
+        const pendingHot = hotTraces.filter(
+          (t) =>
+            !dbIds.has(t.id) &&
+            now - t.receivedAt < 15_000 &&
+            matchesTraceQuery(t, filter, searchLower)
+        );
+        if (pendingHot.length > 0) {
+          finalTraces = [...pendingHot, ...dbTraces]
+            .sort((a, b) =>
+              b.receivedAt !== a.receivedAt
+                ? b.receivedAt - a.receivedAt
+                : a.id.localeCompare(b.id)
+            )
+            .slice(0, limit);
+          finalTotal += pendingHot.length;
         }
       }
-    } else if (isMissingTableError(error)) {
-      traceGlobal.__gemprismRequestLogsStatus = { available: false, checkedAt: Date.now() };
+
+      const hasMore =
+        offset + dbTraces.length < (count ?? dbTraces.length) ||
+        offset + finalTraces.length < finalTotal;
+
+      return {
+        traces: finalTraces,
+        total: Math.max(finalTotal, finalTraces.length),
+        hasMore,
+        storageMode: "request_logs",
+      };
     }
-  }
 
-  if (storageMode === "compat") {
-    const { data: compatRows } = await admin
-      .from("model_usage")
-      .select("model_name")
-      .eq("user_id", userId)
-      .like("model_name", `${TRACE_PREFIX}%`)
-      .order("rpm_window_start", { ascending: false })
-      .limit(limit);
+    if (isMissingTableError(error)) {
+      traceGlobal.__gemprismRequestLogsStatus = { available: false, checkedAt: Date.now() };
+    } else if (error && safeSearch) {
+      // Fallback: filter recent rows in JS if PostgREST rejects a search expression
+      let fallbackQuery = admin
+        .from("request_logs")
+        .select("trace_data")
+        .eq("user_id", userId);
 
-    for (const row of compatRows || []) {
-      const parsed = parseCompatTraceRow(userId, row.model_name as string);
-      if (!parsed) continue;
-      // Prefer in-memory hot copy when available because it preserves untruncated hops
-      if (!merged.has(parsed.id)) {
-        merged.set(parsed.id, parsed);
+      if (filter === "fallbacks") {
+        fallbackQuery = fallbackQuery.contains("trace_data", { didFallback: true });
+      } else if (filter === "errors") {
+        fallbackQuery = fallbackQuery.contains("trace_data", { success: false });
+      }
+
+      const { data: fallbackRows, error: fallbackErr } = await fallbackQuery
+        .order("received_at", { ascending: false })
+        .order("id", { ascending: false })
+        .limit(500);
+
+      if (!fallbackErr && Array.isArray(fallbackRows)) {
+        const matched = fallbackRows
+          .map((r) => r.trace_data as RequestTrace | null)
+          .filter((t): t is RequestTrace =>
+            Boolean(t && t.id && matchesTraceQuery(t, filter, searchLower))
+          );
+        const sliced = matched.slice(offset, offset + limit);
+        return {
+          traces: sliced,
+          total: matched.length,
+          hasMore: offset + sliced.length < matched.length,
+          storageMode: "request_logs",
+        };
       }
     }
   }
 
-  const sorted = Array.from(merged.values())
-    .sort((a, b) => (b.receivedAt !== a.receivedAt ? b.receivedAt - a.receivedAt : a.id.localeCompare(b.id)))
-    .slice(0, limit);
+  // Fallback read from model_usage + hot memory when request_logs does not exist yet
+  const merged = new Map<string, RequestTrace>();
+  for (const t of hotTraces) {
+    merged.set(t.id, t);
+  }
 
-  return { traces: sorted, storageMode };
+  const { data: compatRows } = await admin
+    .from("model_usage")
+    .select("model_name")
+    .eq("user_id", userId)
+    .like("model_name", `${TRACE_PREFIX}%`)
+    .order("rpm_window_start", { ascending: false })
+    .limit(MAX_COMPAT_DB_TRACES);
+
+  for (const row of compatRows || []) {
+    const parsed = parseCompatTraceRow(userId, row.model_name as string);
+    if (parsed && !merged.has(parsed.id)) {
+      merged.set(parsed.id, parsed);
+    }
+  }
+
+  const allMatching = Array.from(merged.values())
+    .filter((t) => matchesTraceQuery(t, filter, searchLower))
+    .sort((a, b) =>
+      b.receivedAt !== a.receivedAt ? b.receivedAt - a.receivedAt : a.id.localeCompare(b.id)
+    );
+
+  const sliced = allMatching.slice(offset, offset + limit);
+
+  return {
+    traces: sliced,
+    total: allMatching.length,
+    hasMore: offset + sliced.length < allMatching.length,
+    storageMode: "compat",
+  };
+}
+
+export async function getRecentRequestTraces(
+  userId: string,
+  limit: number = 30
+): Promise<{ traces: RequestTrace[]; storageMode: TraceStorageMode }> {
+  const page = await getRequestTracesPage(userId, { limit, offset: 0 });
+  return { traces: page.traces, storageMode: page.storageMode };
 }
 
 export async function clearRequestTraces(userId: string): Promise<void> {

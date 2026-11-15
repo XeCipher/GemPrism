@@ -27,9 +27,10 @@ export default function DashboardOverviewPage() {
 
   if (!data) return null;
 
-  const proxyBaseUrl = `https://${
-    typeof window !== "undefined" ? window.location.host : "gemprism.vercel.app"
-  }/api/proxy`;
+  const proxyBaseUrl =
+    typeof window !== "undefined"
+      ? `${window.location.origin}/api/proxy`
+      : "https://gemprism.vercel.app/api/proxy";
 
   const integrationCode = `import { GoogleGenAI } from "@google/genai";
 
@@ -63,6 +64,7 @@ console.log(response.text);`;
   const isBrandNewUser = data.keys.length === 0;
   const integrationVisible = showIntegration || isBrandNewUser;
   const latestTrace = data.traces[0];
+  const savedTracesCount = data.tracesTotal ?? data.traces.length;
 
   return (
     <div className="space-y-6">
@@ -301,7 +303,7 @@ console.log(response.text);`;
           <div>
             <div className="text-sm font-semibold text-white">Request Inspector</div>
             <div className="text-xs text-neutral-500 mt-0.5">
-              Waterfall timings &amp; fallback chains ({data.traces.length} traced)
+              Waterfall timings &amp; fallback chains ({savedTracesCount.toLocaleString()} saved)
             </div>
           </div>
           <ArrowRight size={16} className="text-emerald-400 shrink-0" />

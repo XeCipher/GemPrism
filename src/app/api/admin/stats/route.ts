@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getSupabaseAdminClient } from "@/lib/supabaseAdmin";
 import { discoverModelsForKeys, getQuotaResetDateStr } from "@/lib/geminiModels";
-import { getRecentRequestTraces, TRACE_PREFIX } from "@/lib/requestTraces";
+import { getRequestTracesPage, TRACE_PREFIX } from "@/lib/requestTraces";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -55,7 +55,7 @@ export async function GET(req: Request) {
       supabaseAdmin.from("gateway_tokens").select("token").eq("user_id", userId).maybeSingle(),
       supabaseAdmin.from("api_keys").select("*").eq("user_id", userId),
       supabaseAdmin.from("model_usage").select("*").eq("user_id", userId),
-      getRecentRequestTraces(userId, 30),
+      getRequestTracesPage(userId, { limit: 30, offset: 0 }),
     ]);
 
     let userToken = tokenReq.data?.token;
@@ -177,7 +177,8 @@ export async function GET(req: Request) {
       usage,
       cooldowns,
       traces: traceResult.traces,
-      traceStorageMode: traceResult.storageMode,
+      tracesTotal: traceResult.total,
+      tracesHasMore: traceResult.hasMore,
       todayStr,
       summary: {
         total_requests: totalRequests,

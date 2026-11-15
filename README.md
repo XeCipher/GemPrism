@@ -59,7 +59,7 @@ There is no new SDK to learn. Two configuration lines are all that changes in yo
 | --- | --- |
 | Live Model Discovery | Queries Google's `v1beta/models` endpoint automatically using your keys and classifies new releases without manual updates. |
 | Cascading Key & Model Failover | Tries every healthy key first; when all keys exhaust a model (`429`, `503`, `404`), steps down smoothly (e.g., `Flash` → older `Flash` → `Flash-Lite` → `Hydrogen` / `Pro` → `Gemma`). |
-| Request & Failover Tracer | Inspect recent requests down to millisecond arrival timestamps, requested vs. settled model, complete failover chain, phase timing splits, and per-hop waterfall bars. |
+| Request & Failover Tracer | Inspect persistent request history down to millisecond arrival timestamps, requested vs. settled model, complete failover chain, phase timing splits, and per-hop waterfall bars. |
 | Limit-Agnostic Cooldowns | Detects `limit: 0`, `PerDay` resets (Pacific Time midnight), and `RetryInfo` delays directly from Google error responses. |
 | Dynamic `-latest` Resolution | Automatically maps `gemini-flash-latest`, `gemini-flash-lite-latest`, `gemini-pro-latest`, and future `-latest` tags to the newest matching live model. |
 | Multi-Page Telemetry Dashboard | Dedicated Overview, Requests Inspector, Analytics (stacked key-by-model charts, donut, heatmap), API Keys Pool, and searchable Model Catalog. |
@@ -73,7 +73,7 @@ There is no new SDK to learn. Two configuration lines are all that changes in yo
 | --- | --- |
 | Framework | Next.js 16 (App Router), React 19, TypeScript |
 | Styling | Tailwind CSS 4 |
-| Database and Auth | Supabase (PostgreSQL, Auth) |
+| Database and Auth | Supabase (PostgreSQL, Auth, Realtime) |
 | Runtime | Vercel Node.js Runtime |
 
 ---
@@ -116,17 +116,17 @@ Run the following SQL in your Supabase SQL editor:
 
 ```sql
 -- Gateway tokens (one per user, auto-generated on first login)
-create table gateway_tokens (
+create table if not exists public.gateway_tokens (
   id         uuid primary key default gen_random_uuid(),
-  user_id    uuid references auth.users not null,
+  user_id    uuid references auth.users(id) on delete cascade not null,
   token      text not null unique,
   created_at timestamptz default now()
 );
 
 -- API key pool
-create table api_keys (
+create table if not exists public.api_keys (
   id             uuid primary key default gen_random_uuid(),
-  user_id        uuid references auth.users not null,
+  user_id        uuid references auth.users(id) on delete cascade not null,
   name           text,
   key_value      text not null,
   status         text default 'healthy',
@@ -139,10 +139,10 @@ create table api_keys (
 );
 
 -- Per-model usage & cooldown counters
-create table model_usage (
+create table if not exists public.model_usage (
   id               uuid primary key default gen_random_uuid(),
-  user_id          uuid references auth.users not null,
-  api_key_id       uuid references api_keys not null,
+  user_id          uuid references auth.users(id) on delete cascade not null,
+  api_key_id       uuid references public.api_keys(id) on delete cascade not null,
   model_name       text not null,
   rpd_count        int default 0,
   rpm_count        int default 0,
@@ -151,21 +151,47 @@ create table model_usage (
   unique (api_key_id, model_name)
 );
 
--- Optional: Persistent request & failover traces
--- (GemPrism falls back automatically if this table is omitted)
-create table request_logs (
+-- Persistent request & failover traces
+create table if not exists public.request_logs (
   id          uuid primary key default gen_random_uuid(),
-  user_id     uuid references auth.users not null,
-  created_at  timestamptz default now(),
+  user_id     uuid references auth.users(id) on delete cascade not null,
+  created_at  timestamptz default now() not null,
   received_at bigint not null,
   trace_data  jsonb not null
 );
 
-create index idx_request_logs_user_time
-  on request_logs (user_id, received_at desc);
+create index if not exists idx_request_logs_user_time
+  on public.request_logs (user_id, received_at desc);
+
+create index if not exists idx_request_logs_trace_gin
+  on public.request_logs using gin (trace_data jsonb_path_ops);
+
+alter table public.request_logs enable row level security;
+
+drop policy if exists "Users can view own request logs" on public.request_logs;
+create policy "Users can view own request logs"
+  on public.request_logs for select
+  using (auth.uid() = user_id);
+
+drop policy if exists "Users can delete own request logs" on public.request_logs;
+create policy "Users can delete own request logs"
+  on public.request_logs for delete
+  using (auth.uid() = user_id);
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime'
+      and schemaname = 'public'
+      and tablename = 'request_logs'
+  ) then
+    alter publication supabase_realtime add table public.request_logs;
+  end if;
+end $$;
 ```
 
-Enable Row Level Security on all tables and add appropriate policies so users can only read and write their own rows.
+Enable Row Level Security on all tables (`gateway_tokens`, `api_keys`, `model_usage`, and `request_logs`) and add appropriate policies so users can only read and write their own rows.
 
 ### Integration
 
@@ -191,9 +217,7 @@ console.log(response.text);
 
 All model identifiers, request shapes, and response formats are identical to the native Gemini API. When failover occurs, GemPrism attaches `X-Gemprism-Model`, `X-Gemprism-Original-Model`, `X-Gemprism-Fallback`, and `X-Gemprism-Duration-Ms` headers to the response.
 
----
-
-## Architecture
+### Architecture
 
 ```text
 Your App -> GemPrism Proxy -> Key Pool & Model Failover -> Google Generative Language API
@@ -222,31 +246,31 @@ GemPrism/
     │   │   ├── admin/
     │   │   │   ├── keys/route.ts           # Key revive, cooldown reset, and deletion
     │   │   │   ├── stats/route.ts          # Live catalog, telemetry & traces endpoint
-    │   │   │   └── traces/route.ts         # Request trace retrieval & clear endpoint
+    │   │   │   └── traces/route.ts         # Paginated & searchable request traces endpoint
     │   │   ├── keepalive/route.ts          # Supabase keepalive probe
     │   │   └── proxy/[...path]/route.ts   # Core gateway proxy with trace instrumentation
     │   ├── dashboard/
-    │   │   ├── layout.tsx                  # Shared dashboard provider & shell
-    │   │   ├── page.tsx                    # Executive overview & latest request snapshot
-    │   │   ├── requests/page.tsx           # Deep request & failover trace inspector
-    │   │   ├── analytics/page.tsx          # Interactive charts & heatmap matrix
-    │   │   ├── keys/page.tsx               # API key pool & per-key model usage
-    │   │   └── models/page.tsx             # Searchable live model catalog
-    │   ├── login/page.tsx                  # Sign in and sign up
-    │   └── page.tsx                        # Marketing landing page
+    │   │   ├── layout.tsx                 # Shared dashboard provider & shell
+    │   │   ├── page.tsx                   # Executive overview & latest request snapshot
+    │   │   ├── requests/page.tsx          # Deep request & failover trace inspector
+    │   │   ├── analytics/page.tsx         # Interactive charts & heatmap matrix
+    │   │   ├── keys/page.tsx              # API key pool & per-key model usage
+    │   │   └── models/page.tsx            # Searchable live model catalog
+    │   ├── login/page.tsx                 # Sign in and sign up
+    │   └── page.tsx                       # Marketing landing page
     ├── components/
-    │   ├── AnalyticsCharts.tsx             # Flicker-free graphs, RPM pulse & heatmap
-    │   ├── CodeBlock.tsx                   # Syntax-highlighted code display
-    │   ├── DashboardContext.tsx            # Shared auth, polling & telemetry state
-    │   ├── DashboardShell.tsx              # Desktop tabs & mobile bottom navigation
-    │   ├── Logo.tsx                        # GemPrism SVG mark
-    │   └── RequestTraceInspector.tsx       # Waterfall timeline & model chain inspector
+    │   ├── AnalyticsCharts.tsx            # Flicker-free graphs, RPM pulse & heatmap
+    │   ├── CodeBlock.tsx                  # Syntax-highlighted code display
+    │   ├── DashboardContext.tsx           # Shared auth, realtime & telemetry state
+    │   ├── DashboardShell.tsx             # Desktop tabs & mobile bottom navigation
+    │   ├── Logo.tsx                       # GemPrism SVG mark
+    │   └── RequestTraceInspector.tsx      # Waterfall timeline & model chain inspector
     └── lib/
-        ├── geminiModels.ts                 # Live discovery, alias resolution & fallback engine
-        ├── modelLimits.ts                  # Compatibility re-exports
-        ├── requestTraces.ts                # Request trace persistence & compat fallback
-        ├── supabase.ts                     # Client-side Supabase instance
-        └── supabaseAdmin.ts                # Server-side Supabase admin instance
+        ├── geminiModels.ts                # Live discovery, alias resolution & fallback engine
+        ├── modelLimits.ts                 # Compatibility re-exports
+        ├── requestTraces.ts               # Persistent trace queries & storage engine
+        ├── supabase.ts                    # Client-side Supabase instance
+        └── supabaseAdmin.ts               # Server-side Supabase admin instance
 ```
 
 ---
