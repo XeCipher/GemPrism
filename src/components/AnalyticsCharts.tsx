@@ -115,7 +115,7 @@ export function LiveRpmPulseCard({
         </span>
       </div>
       <p className="text-xs text-neutral-500 mb-3">
-        Rolling throughput captured across live 6s telemetry polls.
+        Rolling requests-per-minute throughput updated in real time.
       </p>
 
       <div className="bg-[#0d0d0d] border border-neutral-800/80 rounded-xl p-3">
