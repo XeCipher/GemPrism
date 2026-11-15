@@ -5,6 +5,7 @@ import React, {
   useCallback,
   useContext,
   useEffect,
+  useRef,
   useState,
 } from "react";
 import { useRouter } from "next/navigation";
@@ -20,6 +21,7 @@ import type {
 } from "@/components/AnalyticsCharts";
 
 export type ToastType = "success" | "error" | "info";
+export type RealtimeConnectionStatus = "connecting" | "connected" | "fallback" | "paused";
 
 interface Toast {
   id: string;
@@ -56,6 +58,8 @@ interface DashboardContextValue {
   refreshing: boolean;
   livePolling: boolean;
   setLivePolling: React.Dispatch<React.SetStateAction<boolean>>;
+  realtimeStatus: RealtimeConnectionStatus;
+  realtimeVerified: boolean;
   selectedKeyId: string;
   setSelectedKeyId: React.Dispatch<React.SetStateAction<string>>;
   selectedModelId: string;
@@ -111,6 +115,8 @@ export function DashboardProvider({ children }: { children: React.ReactNode }) {
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
   const [refreshing, setRefreshing] = useState(false);
   const [livePolling, setLivePolling] = useState(true);
+  const [realtimeStatus, setRealtimeStatus] = useState<RealtimeConnectionStatus>("connecting");
+  const [realtimeVerified, setRealtimeVerified] = useState(false);
   const [selectedKeyId, setSelectedKeyId] = useState("");
   const [selectedModelId, setSelectedModelId] = useState("");
   const [rpmHistory, setRpmHistory] = useState<Array<{ time: string; rpm: number; rpd: number }>>(
@@ -118,6 +124,9 @@ export function DashboardProvider({ children }: { children: React.ReactNode }) {
   );
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
+
+  const fetchInFlightRef = useRef(false);
+  const realtimeVerifiedRef = useRef(false);
 
   const addToast = useCallback((message: string, type: ToastType = "info") => {
     const id = Math.random().toString(36).slice(2);
@@ -132,6 +141,9 @@ export function DashboardProvider({ children }: { children: React.ReactNode }) {
 
   const performFetch = useCallback(
     async (activeSession: Session, quiet: boolean, forceSyncModels: boolean) => {
+      if (quiet && fetchInFlightRef.current) return;
+      fetchInFlightRef.current = true;
+
       try {
         const endpoint = forceSyncModels ? "/api/admin/stats?refresh=1" : "/api/admin/stats";
         const res = await fetch(endpoint, {
@@ -148,14 +160,19 @@ export function DashboardProvider({ children }: { children: React.ReactNode }) {
             minute: "2-digit",
             second: "2-digit",
           });
-          setRpmHistory((prev) => [
-            ...prev.slice(-19),
-            {
+
+          setRpmHistory((prev) => {
+            const nextPoint = {
               time: label,
               rpm: json.summary.active_rpm,
               rpd: json.summary.today_requests,
-            },
-          ]);
+            };
+            // Update in place if multiple realtime events arrive within the same second
+            if (prev.length > 0 && prev[prev.length - 1].time === label) {
+              return [...prev.slice(0, -1), nextPoint];
+            }
+            return [...prev.slice(-19), nextPoint];
+          });
 
           if (forceSyncModels) {
             addToast(
@@ -169,6 +186,8 @@ export function DashboardProvider({ children }: { children: React.ReactNode }) {
         }
       } catch {
         if (!quiet) addToast("Failed to fetch stats", "error");
+      } finally {
+        fetchInFlightRef.current = false;
       }
     },
     [router, addToast]
@@ -200,28 +219,131 @@ export function DashboardProvider({ children }: { children: React.ReactNode }) {
     };
   }, [router]);
 
-  // Initial load + 6-second polling when livePolling is active
+  // Live Supabase Realtime WebSocket stream + visibility-aware RPM decay sync
   useEffect(() => {
     if (!session) return;
-    let active = true;
 
     void performFetch(session, true, false);
 
     if (!livePolling) {
-      return () => {
-        active = false;
-      };
+      return;
     }
 
-    const pollId = setInterval(() => {
-      if (active) {
+    let active = true;
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+    let syncIntervalId: ReturnType<typeof setInterval> | null = null;
+
+    const scheduleDebouncedSync = () => {
+      if (!active) return;
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        if (active) {
+          void performFetch(session, true, false);
+        }
+      }, 300);
+    };
+
+    const markRealtimeVerified = () => {
+      if (!realtimeVerifiedRef.current) {
+        realtimeVerifiedRef.current = true;
+        setRealtimeVerified(true);
+        // Once WebSocket push is verified, slow the background RPM-decay sync
+        startBackgroundSync(15_000);
+      }
+    };
+
+    const startBackgroundSync = (intervalMs: number) => {
+      if (syncIntervalId) clearInterval(syncIntervalId);
+      syncIntervalId = setInterval(() => {
+        if (active && document.visibilityState === "visible") {
+          void performFetch(session, true, false);
+        }
+      }, intervalMs);
+    };
+
+    void supabaseClient.realtime.setAuth(session.access_token);
+
+    const channel = supabaseClient
+      .channel(`gemprism-live-${session.user.id}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "api_keys",
+          filter: `user_id=eq.${session.user.id}`,
+        },
+        () => {
+          markRealtimeVerified();
+          scheduleDebouncedSync();
+        }
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "model_usage",
+          filter: `user_id=eq.${session.user.id}`,
+        },
+        () => {
+          markRealtimeVerified();
+          scheduleDebouncedSync();
+        }
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "INSERT",
+          schema: "public",
+          table: "request_logs",
+          filter: `user_id=eq.${session.user.id}`,
+        },
+        (payload) => {
+          markRealtimeVerified();
+          const row = payload.new as Record<string, unknown> | null;
+          const incomingTrace = row?.trace_data as RequestTrace | undefined;
+          if (incomingTrace?.id) {
+            setNowMs(Date.now());
+            setData((prev) => {
+              if (!prev) return prev;
+              const nextTraces = [
+                incomingTrace,
+                ...prev.traces.filter((t) => t.id !== incomingTrace.id),
+              ].slice(0, 30);
+              return { ...prev, traces: nextTraces };
+            });
+          }
+          scheduleDebouncedSync();
+        }
+      )
+      .subscribe((status) => {
+        if (!active) return;
+        if (status === "SUBSCRIBED") {
+          setRealtimeStatus("connected");
+        } else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
+          setRealtimeStatus("fallback");
+        } else if (status === "CLOSED") {
+          setRealtimeStatus("paused");
+        }
+      });
+
+    // Fast fallback sync when Realtime events aren't flowing yet, slowing to 15s once verified
+    startBackgroundSync(realtimeVerifiedRef.current ? 15_000 : 3_000);
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible" && active) {
         void performFetch(session, true, false);
       }
-    }, 6000);
+    };
+    document.addEventListener("visibilitychange", handleVisibilityChange);
 
     return () => {
       active = false;
-      clearInterval(pollId);
+      if (debounceTimer) clearTimeout(debounceTimer);
+      if (syncIntervalId) clearInterval(syncIntervalId);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      void supabaseClient.removeChannel(channel);
     };
   }, [session, livePolling, performFetch]);
 
@@ -359,6 +481,10 @@ export function DashboardProvider({ children }: { children: React.ReactNode }) {
     router.push("/login");
   }, [router]);
 
+  const effectiveRealtimeStatus: RealtimeConnectionStatus = livePolling
+    ? realtimeStatus
+    : "paused";
+
   return (
     <DashboardContext.Provider
       value={{
@@ -368,6 +494,8 @@ export function DashboardProvider({ children }: { children: React.ReactNode }) {
         refreshing,
         livePolling,
         setLivePolling,
+        realtimeStatus: effectiveRealtimeStatus,
+        realtimeVerified,
         selectedKeyId,
         setSelectedKeyId,
         selectedModelId,

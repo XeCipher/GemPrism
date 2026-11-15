@@ -40,6 +40,8 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
     refreshing,
     livePolling,
     setLivePolling,
+    realtimeStatus,
+    realtimeVerified,
     refreshStats,
     clearAllCooldowns,
     handleSignOut,
@@ -75,6 +77,20 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
   }
 
   const latestTrace = data.traces[0];
+  const liveLabel = realtimeVerified ? "Live · Realtime" : "Live";
+  const liveTitle = !livePolling
+    ? "Live updates paused (click to resume)"
+    : realtimeVerified
+      ? "Supabase Realtime WebSocket active (click to pause)"
+      : realtimeStatus === "connected"
+        ? "Realtime stream subscribed + live RPM sync active (click to pause)"
+        : "Live telemetry sync active (click to pause)";
+
+  const footerStatusText = !livePolling
+    ? "Live telemetry paused"
+    : realtimeVerified
+      ? "Realtime WebSocket connected · Live Gemini model discovery active"
+      : "Live telemetry stream active · Realtime subscription + RPM window sync";
 
   return (
     <div className="min-h-screen bg-[#030303] bg-dots text-neutral-300 overflow-x-hidden selection:bg-emerald-500/25">
@@ -119,7 +135,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
                   ? "bg-emerald-500/10 border-emerald-500/25 text-emerald-300"
                   : "bg-[#0a0a0a] border-neutral-800 text-neutral-400 hover:text-white"
               }`}
-              title={livePolling ? "Auto-refresh every 6s (click to pause)" : "Auto-refresh paused (click to resume)"}
+              title={liveTitle}
             >
               {livePolling ? (
                 <>
@@ -127,7 +143,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
                     <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400/60" />
                     <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-400" />
                   </span>
-                  <span className="hidden sm:inline">Live</span>
+                  <span className="hidden sm:inline">{liveLabel}</span>
                   <Pause size={11} className="opacity-70" />
                 </>
               ) : (
@@ -272,9 +288,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
                 livePolling ? "bg-emerald-500" : "bg-neutral-600"
               }`}
             />
-            {livePolling
-              ? "Auto-refreshing telemetry every 6 seconds · Live Gemini model discovery active"
-              : "Live auto-refresh paused"}
+            {footerStatusText}
           </span>
           <span className="font-medium flex items-center gap-1">
             GemPrism command center
