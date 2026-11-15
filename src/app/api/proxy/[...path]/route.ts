@@ -7,6 +7,15 @@ import {
   getQuotaResetDateStr,
   resolveModelAlias,
 } from "@/lib/geminiModels";
+import {
+  saveRequestTrace,
+  TRACE_PREFIX,
+  type HopOutcome,
+  type RequestHop,
+  type RequestModelStep,
+  type RequestTrace,
+  type TraceFallbackType,
+} from "@/lib/requestTraces";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -186,6 +195,44 @@ function substituteModelInPayload(
   }
 }
 
+function mapErrKindToHopOutcome(kind: string): HopOutcome {
+  switch (kind) {
+    case "limit_zero":
+    case "daily_exhausted":
+    case "minute_rate_limit":
+      return "rate_limited";
+    case "overloaded":
+      return "overloaded";
+    case "model_not_found":
+      return "not_found";
+    case "dead_key":
+      return "dead_key";
+    case "balance_exhausted":
+      return "balance_exhausted";
+    case "server_error":
+      return "server_error";
+    default:
+      return "client_error";
+  }
+}
+
+function mapHopOutcomeToModelStatus(outcome: HopOutcome): RequestModelStep["status"] {
+  switch (outcome) {
+    case "success":
+      return "settled";
+    case "skipped":
+      return "skipped";
+    case "overloaded":
+      return "overloaded";
+    case "not_found":
+      return "not_found";
+    case "rate_limited":
+      return "exhausted";
+    default:
+      return "error";
+  }
+}
+
 export async function handler(
   req: Request,
   { params }: { params: Promise<{ path: string[] }> }
@@ -194,6 +241,8 @@ export async function handler(
     return new NextResponse(null, { status: 200 });
   }
 
+  const receivedAt = Date.now();
+  const tStart = performance.now();
   const reqUrl = new URL(req.url);
 
   // 1. Extract Gateway Token
@@ -222,6 +271,7 @@ export async function handler(
     return NextResponse.json({ error: "Invalid Gateway Token" }, { status: 401 });
   }
   const userId = tokenData.user_id as string;
+  const tAuthDone = performance.now();
 
   // 3. Parse URL & Payload
   const resolvedParams = await params;
@@ -230,12 +280,16 @@ export async function handler(
   const originalPayload = hasBody ? await req.arrayBuffer() : undefined;
 
   const { requestedModel, action } = extractModelFromRequest(urlPath, originalPayload);
+  const isStreaming =
+    action === "streamGenerateContent" ||
+    reqUrl.searchParams.get("alt")?.toLowerCase() === "sse";
 
   // 4. Fetch Key Pool & Live Telemetry
   const [keysReq, usageReq] = await Promise.all([
     admin.from("api_keys").select("*").eq("user_id", userId),
     admin.from("model_usage").select("*").eq("user_id", userId),
   ]);
+  const tDbDone = performance.now();
 
   const keys = (keysReq.data || []) as ApiKeyRow[];
   const usageRows = (usageReq.data || []) as ModelUsageRow[];
@@ -279,6 +333,10 @@ export async function handler(
   const modelCooldownMap = new Map<string, { until: number; isDaily: boolean }>();
 
   for (const row of usageRows) {
+    if (row.model_name.startsWith(TRACE_PREFIX)) {
+      continue;
+    }
+
     if (row.model_name.startsWith(COOLDOWN_PREFIX)) {
       const targetModel = row.model_name.slice(COOLDOWN_PREFIX.length);
       const until = row.rpm_window_start || 0;
@@ -301,7 +359,7 @@ export async function handler(
 
   // Resolve target canonical model & build cascading fallback chain
   let modelsToTry: string[] = [];
-  let originalModelName = requestedModel || "default";
+  let originalModelName = requestedModel || "(passthrough)";
 
   if (requestedModel) {
     const resolvedAlias = resolveModelAlias(requestedModel, discovery.models);
@@ -310,6 +368,133 @@ export async function handler(
   } else {
     modelsToTry = ["__passthrough__"];
   }
+
+  const tPrepDone = performance.now();
+  const authMs = Math.max(0, Math.round(tAuthDone - tStart));
+  const poolFetchMs = Math.max(0, Math.round(tDbDone - tAuthDone));
+  const discoveryMs = Math.max(0, Math.round(tPrepDone - tDbDone));
+
+  // Trace collection state
+  const traceId = `tr_${receivedAt.toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+  const hops: RequestHop[] = [];
+  const modelStepMap = new Map<string, RequestModelStep>();
+  let settledKeyId: string | null = null;
+  let lastAttemptedKeyId: string | null = null;
+
+  const ensureModelStep = (model: string): RequestModelStep => {
+    const existing = modelStepMap.get(model);
+    if (existing) return existing;
+    const created: RequestModelStep = {
+      model,
+      status: "skipped",
+      durationMs: 0,
+      attempts: 0,
+      keysTried: [],
+      note: "",
+    };
+    modelStepMap.set(model, created);
+    return created;
+  };
+
+  const recordHop = (hop: Omit<RequestHop, "index">) => {
+    const fullHop: RequestHop = {
+      index: hops.length + 1,
+      ...hop,
+    };
+    hops.push(fullHop);
+
+    const step = ensureModelStep(hop.model);
+    step.durationMs += hop.durationMs;
+    if (hop.type === "attempt") {
+      step.attempts += 1;
+      if (hop.keyName && !step.keysTried.includes(hop.keyName)) {
+        step.keysTried.push(hop.keyName);
+      }
+    }
+    step.status = mapHopOutcomeToModelStatus(hop.outcome);
+    step.note = hop.reason;
+  };
+
+  let pendingTrace: RequestTrace | null = null;
+
+  const buildTraceSnapshot = (paramsSnapshot: {
+    success: boolean;
+    statusCode: number;
+    settledModel: string | null;
+    settledKeyName: string | null;
+    errorSummary: string | null;
+  }): RequestTrace => {
+    const isPassthrough = !requestedModel;
+    const attemptHops = hops.filter((h) => h.type === "attempt");
+    const upstreamSettledMs = paramsSnapshot.success
+      ? attemptHops.find((h) => h.outcome === "success")?.durationMs || 0
+      : 0;
+    const upstreamFailedMs = attemptHops
+      .filter((h) => h.outcome !== "success")
+      .reduce((sum, h) => sum + h.durationMs, 0);
+
+    const upstreamTotal = upstreamFailedMs + upstreamSettledMs;
+    const measuredTotal = Math.max(1, Math.round(performance.now() - tStart));
+    const totalDurationMs = Math.max(upstreamTotal, measuredTotal);
+    const gatewayOverheadMs = Math.max(0, totalDurationMs - upstreamTotal);
+
+    let fallbackType: TraceFallbackType = "direct";
+    let didFallback = false;
+
+    if (!paramsSnapshot.success) {
+      fallbackType = "failed";
+      didFallback =
+        attemptHops.length > 1 ||
+        (!isPassthrough &&
+          Boolean(
+            paramsSnapshot.settledModel === null &&
+              Array.from(modelStepMap.keys()).length > 1
+          ));
+    } else if (
+      !isPassthrough &&
+      paramsSnapshot.settledModel &&
+      paramsSnapshot.settledModel !== originalModelName
+    ) {
+      fallbackType = "model_fallback";
+      didFallback = true;
+    } else if (attemptHops.some((h) => h.outcome !== "success")) {
+      fallbackType = "key_failover";
+      didFallback = true;
+    }
+
+    return {
+      id: traceId,
+      userId,
+      receivedAt,
+      receivedAtIso: new Date(receivedAt).toISOString(),
+      method: req.method,
+      endpointPath: urlPath,
+      action,
+      isStreaming,
+      isPassthrough,
+      requestedModel: requestedModel || "(passthrough)",
+      resolvedModel: originalModelName,
+      settledModel: paramsSnapshot.settledModel,
+      settledKeyName: paramsSnapshot.settledKeyName,
+      statusCode: paramsSnapshot.statusCode,
+      success: paramsSnapshot.success,
+      fallbackType,
+      didFallback,
+      totalDurationMs,
+      phases: {
+        authMs,
+        poolFetchMs,
+        discoveryMs,
+        gatewayOverheadMs,
+        upstreamFailedMs,
+        upstreamSettledMs,
+      },
+      plannedChain: isPassthrough ? [] : modelsToTry,
+      modelsTraversed: Array.from(modelStepMap.values()),
+      hops,
+      errorSummary: paramsSnapshot.errorSummary,
+    };
+  };
 
   // Batched telemetry buffers flushed asynchronously via Next.js after()
   const keyDeltaMap = new Map<string, PendingKeyDelta>();
@@ -374,6 +559,11 @@ export async function handler(
       );
     }
 
+    if (pendingTrace) {
+      const traceAnchorKeyId = settledKeyId || lastAttemptedKeyId || keys[0]?.id;
+      ops.push(saveRequestTrace(userId, traceAnchorKeyId, pendingTrace));
+    }
+
     if (ops.length === 0) return;
 
     try {
@@ -387,6 +577,7 @@ export async function handler(
 
   let preferredErrorResponse: NextResponse | null = null;
   let lastErrorResponse: NextResponse | null = null;
+  let lastErrorSummary: string | null = null;
   const attemptedModels: string[] = [];
 
   // 6. Cascading Model Loop -> Key Pool Loop (strictly preserves tier order)
@@ -401,6 +592,17 @@ export async function handler(
     if (!isPassthrough && hasMoreModels) {
       const overloadedUntil = hotOverloaded.get(currentModelName) || 0;
       if (overloadedUntil > attemptNow) {
+        recordHop({
+          type: "skip",
+          model: currentModelName,
+          keyId: null,
+          keyName: null,
+          startOffsetMs: Math.max(0, Math.round(performance.now() - tStart)),
+          durationMs: 0,
+          httpStatus: 503,
+          outcome: "overloaded",
+          reason: "Temporarily marked 503 overloaded; skipped to keep latency low",
+        });
         continue;
       }
       if (overloadedUntil > 0) {
@@ -454,7 +656,6 @@ export async function handler(
       })
       .filter((k) => k.effectiveStatus === "healthy" && !k.pairCooling)
       .sort((a, b) => {
-        // Spread concurrent requests evenly across all healthy keys first
         if (a.inFlight !== b.inFlight) return a.inFlight - b.inFlight;
         if (a.effectiveRpm !== b.effectiveRpm) return a.effectiveRpm - b.effectiveRpm;
         if (a.modelRpd !== b.modelRpd) return a.modelRpd - b.modelRpd;
@@ -465,6 +666,19 @@ export async function handler(
       });
 
     if (candidateKeys.length === 0) {
+      if (!isPassthrough) {
+        recordHop({
+          type: "skip",
+          model: currentModelName,
+          keyId: null,
+          keyName: null,
+          startOffsetMs: Math.max(0, Math.round(performance.now() - tStart)),
+          durationMs: 0,
+          httpStatus: 0,
+          outcome: "skipped",
+          reason: "All keys cooling, exhausted, or dead for this model",
+        });
+      }
       continue;
     }
 
@@ -477,7 +691,11 @@ export async function handler(
         hasMoreModels && isFallbackModel ? FALLBACK_ATTEMPT_TIMEOUT_MS : BASE_ATTEMPT_TIMEOUT_MS;
 
       const pairKey = `${key.id}_${currentModelName}`;
+      const keyLabel = key.name || "Key";
+      lastAttemptedKeyId = key.id;
+
       const dispatchTime = Date.now();
+      const hopStartOffsetMs = Math.max(0, Math.round(performance.now() - tStart));
       hotInFlight.set(pairKey, (hotInFlight.get(pairKey) || 0) + 1);
       hotInFlight.set(key.id, (hotInFlight.get(key.id) || 0) + 1);
       bumpBurstCount(hotBurstRpm, pairKey, dispatchTime);
@@ -534,8 +752,31 @@ export async function handler(
         responseHeaders.delete("content-length");
 
         const opNow = Date.now();
+        const hopEndOffsetMs = Math.max(hopStartOffsetMs, Math.round(performance.now() - tStart));
+        const hopDurationMs = Math.max(1, hopEndOffsetMs - hopStartOffsetMs);
 
         if (response.ok) {
+          settledKeyId = key.id;
+          recordHop({
+            type: "attempt",
+            model: isPassthrough ? "(passthrough)" : currentModelName,
+            keyId: key.id,
+            keyName: keyLabel,
+            startOffsetMs: hopStartOffsetMs,
+            durationMs: hopDurationMs,
+            httpStatus: response.status,
+            outcome: "success",
+            reason: isStreaming ? "Stream opened (headers received)" : "Served response (200 OK)",
+          });
+
+          pendingTrace = buildTraceSnapshot({
+            success: true,
+            statusCode: response.status,
+            settledModel: isPassthrough ? "(passthrough)" : currentModelName,
+            settledKeyName: keyLabel,
+            errorSummary: null,
+          });
+
           queueKeyDelta(
             key.id,
             { requests: 1 },
@@ -563,6 +804,7 @@ export async function handler(
           if (key.name) {
             responseHeaders.set("X-Gemprism-Key", key.name);
           }
+          responseHeaders.set("X-Gemprism-Duration-Ms", String(pendingTrace.totalDurationMs));
 
           flushTelemetry();
 
@@ -574,7 +816,22 @@ export async function handler(
 
         const errorBody = await response.text();
         const errInfo = classifyErrorResponse(response.status, errorBody, opNow);
+        const hopEndWithBody = Math.max(hopStartOffsetMs, Math.round(performance.now() - tStart));
+        const failedDurationMs = Math.max(1, hopEndWithBody - hopStartOffsetMs);
 
+        recordHop({
+          type: "attempt",
+          model: isPassthrough ? "(passthrough)" : currentModelName,
+          keyId: key.id,
+          keyName: keyLabel,
+          startOffsetMs: hopStartOffsetMs,
+          durationMs: failedDurationMs,
+          httpStatus: response.status,
+          outcome: mapErrKindToHopOutcome(errInfo.kind),
+          reason: errInfo.reason,
+        });
+
+        lastErrorSummary = errInfo.reason;
         const errorResponse = new NextResponse(errorBody, {
           status: response.status,
           headers: responseHeaders,
@@ -675,7 +932,7 @@ export async function handler(
 
           if (!isPassthrough && hasMoreModels) {
             hotOverloaded.set(currentModelName, opNow + OVERLOAD_CACHE_MS);
-            break; // Cascade immediately to the next Flash/model tier
+            break;
           }
           continue;
         }
@@ -704,26 +961,47 @@ export async function handler(
         );
 
         if (!isFallbackModel) {
+          pendingTrace = buildTraceSnapshot({
+            success: false,
+            statusCode: response.status,
+            settledModel: null,
+            settledKeyName: null,
+            errorSummary: errInfo.reason,
+          });
           flushTelemetry();
           return errorResponse;
         }
 
-        // Skip incompatible fallback model and continue down the chain
         break;
       } catch (err: unknown) {
         const isTimeout =
           err instanceof Error &&
           (err.name === "TimeoutError" || err.name === "AbortError");
         const message = isTimeout
-          ? `Upstream timeout (${Math.round(attemptTimeoutMs / 1000)}s) [${currentModelName}]`
+          ? `Upstream timeout (${Math.round(attemptTimeoutMs / 1000)}s)`
           : err instanceof Error
             ? err.message
             : "Unknown network error";
+        const errStatus = isTimeout ? 504 : 502;
+        const hopEndOffset = Math.max(hopStartOffsetMs, Math.round(performance.now() - tStart));
 
-        queueKeyDelta(key.id, { errors: 1 }, { last_error: message });
+        recordHop({
+          type: "attempt",
+          model: isPassthrough ? "(passthrough)" : currentModelName,
+          keyId: key.id,
+          keyName: keyLabel,
+          startOffsetMs: hopStartOffsetMs,
+          durationMs: Math.max(1, hopEndOffset - hopStartOffsetMs),
+          httpStatus: errStatus,
+          outcome: isTimeout ? "timeout" : "server_error",
+          reason: message,
+        });
+
+        lastErrorSummary = `${message} [${currentModelName}]`;
+        queueKeyDelta(key.id, { errors: 1 }, { last_error: lastErrorSummary });
         lastErrorResponse = NextResponse.json(
-          { error: message },
-          { status: isTimeout ? 504 : 502 }
+          { error: lastErrorSummary },
+          { status: errStatus }
         );
 
         if (isTimeout && hasMoreModels) {
@@ -740,10 +1018,23 @@ export async function handler(
     }
   }
 
+  const finalErrorResponse = preferredErrorResponse || lastErrorResponse;
+  const finalStatusCode = finalErrorResponse?.status || 429;
+  const exhaustionMsg =
+    lastErrorSummary ||
+    `All keys and fallback models exhausted or cooling (${attemptedModels.join(", ") || originalModelName})`;
+
+  pendingTrace = buildTraceSnapshot({
+    success: false,
+    statusCode: finalStatusCode,
+    settledModel: null,
+    settledKeyName: null,
+    errorSummary: exhaustionMsg,
+  });
+
   flushTelemetry();
 
-  if (preferredErrorResponse) return preferredErrorResponse;
-  if (lastErrorResponse) return lastErrorResponse;
+  if (finalErrorResponse) return finalErrorResponse;
 
   return NextResponse.json(
     {

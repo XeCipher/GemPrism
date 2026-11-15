@@ -12,7 +12,8 @@ const nextConfig: NextConfig = {
           { key: "Access-Control-Allow-Headers", value: "*" },
           {
             key: "Access-Control-Expose-Headers",
-            value: "X-Gemprism-Fallback, X-Gemprism-Model, X-Gemprism-Original-Model, X-Gemprism-Key",
+            value:
+              "X-Gemprism-Fallback, X-Gemprism-Model, X-Gemprism-Original-Model, X-Gemprism-Key, X-Gemprism-Duration-Ms",
           },
         ],
       },

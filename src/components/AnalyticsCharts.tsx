@@ -73,6 +73,109 @@ const MODEL_PALETTE = [
   "#a855f7", // purple
 ];
 
+export function LiveRpmPulseCard({
+  rpmHistory,
+}: {
+  rpmHistory: Array<{ time: string; rpm: number; rpd: number }>;
+}) {
+  const sparkline = useMemo(() => {
+    const points = rpmHistory.length > 0 ? rpmHistory : [{ time: "Now", rpm: 0, rpd: 0 }];
+    const maxRpm = Math.max(4, ...points.map((p) => p.rpm));
+    const width = 320;
+    const height = 92;
+
+    const coords = points.map((p, idx) => {
+      const x = points.length === 1 ? width / 2 : (idx / (points.length - 1)) * width;
+      const y = height - 10 - (p.rpm / maxRpm) * (height - 22);
+      return { x, y, ...p };
+    });
+
+    const linePath = coords
+      .map((c, idx) => `${idx === 0 ? "M" : "L"} ${c.x.toFixed(1)} ${c.y.toFixed(1)}`)
+      .join(" ");
+    const areaPath =
+      coords.length > 0
+        ? `${linePath} L ${coords[coords.length - 1].x.toFixed(1)} ${height} L ${coords[0].x.toFixed(1)} ${height} Z`
+        : "";
+
+    return { coords, linePath, areaPath, width, height };
+  }, [rpmHistory]);
+
+  const currentRpm = rpmHistory[rpmHistory.length - 1]?.rpm || 0;
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-1">
+        <h3 className="text-sm font-semibold text-white flex items-center gap-2">
+          <Activity size={15} className="text-cyan-400" />
+          Live RPM Pulse
+        </h3>
+        <span className="text-xs font-[family-name:var(--font-mono)] text-cyan-400 font-semibold tabular-nums">
+          {currentRpm.toLocaleString()} req/min
+        </span>
+      </div>
+      <p className="text-xs text-neutral-500 mb-3">
+        Rolling throughput captured across live 6s telemetry polls.
+      </p>
+
+      <div className="bg-[#0d0d0d] border border-neutral-800/80 rounded-xl p-3">
+        <svg
+          viewBox={`0 0 ${sparkline.width} ${sparkline.height}`}
+          className="w-full h-24 overflow-visible"
+        >
+          <defs>
+            <linearGradient id="rpmPulseGrad" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="#06b6d4" stopOpacity="0.35" />
+              <stop offset="100%" stopColor="#06b6d4" stopOpacity="0" />
+            </linearGradient>
+          </defs>
+          <line
+            x1="0"
+            y1={sparkline.height - 10}
+            x2={sparkline.width}
+            y2={sparkline.height - 10}
+            stroke="#262626"
+            strokeDasharray="3 3"
+          />
+          <line
+            x1="0"
+            y1={sparkline.height / 2}
+            x2={sparkline.width}
+            y2={sparkline.height / 2}
+            stroke="#1f1f1f"
+            strokeDasharray="3 3"
+          />
+          {sparkline.areaPath && <path d={sparkline.areaPath} fill="url(#rpmPulseGrad)" />}
+          {sparkline.linePath && (
+            <path
+              d={sparkline.linePath}
+              fill="none"
+              stroke="#06b6d4"
+              strokeWidth="2.2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          )}
+          {sparkline.coords.map((pt, i) => (
+            <circle
+              key={i}
+              cx={pt.x}
+              cy={pt.y}
+              r={i === sparkline.coords.length - 1 ? 3.5 : 2}
+              fill={i === sparkline.coords.length - 1 ? "#22d3ee" : "#0891b2"}
+            />
+          ))}
+        </svg>
+        <div className="flex justify-between text-[10px] text-neutral-600 font-[family-name:var(--font-mono)] mt-1">
+          <span>{rpmHistory[0]?.time || "Now"}</span>
+          <span>Peak: {Math.max(0, ...rpmHistory.map((r) => r.rpm))} rpm</span>
+          <span>{rpmHistory[rpmHistory.length - 1]?.time || "Now"}</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function AnalyticsCharts({
   keys,
   models,
@@ -88,7 +191,6 @@ export function AnalyticsCharts({
   const [hoveredCell, setHoveredCell] = useState<{
     keyName: string;
     modelId: string;
-    modelName: string;
     rpd: number;
     rpm: number;
     coolingReason?: "daily" | "minute";
@@ -116,7 +218,7 @@ export function AnalyticsCharts({
     return map;
   }, [cooldowns]);
 
-  // Rank models that have traffic or active cooldowns
+  // Rank models with deterministic alphabetical tie-breaker so colors & columns never jump on poll
   const activeModelStats = useMemo(() => {
     const totals = new Map<
       string,
@@ -165,11 +267,11 @@ export function AnalyticsCharts({
       const aVal = metric === "rpd" ? a.rpd : a.rpm;
       const bVal = metric === "rpd" ? b.rpd : b.rpm;
       if (bVal !== aVal) return bVal - aVal;
-      return b.rpd - a.rpd;
+      if (b.rpd !== a.rpd) return b.rpd - a.rpd;
+      return a.id.localeCompare(b.id);
     });
   }, [usage, cooldowns, modelMetaMap, metric]);
 
-  // Assign deterministic colors to active models
   const modelColors = useMemo(() => {
     const map = new Map<string, string>();
     activeModelStats.forEach((m, idx) => {
@@ -178,7 +280,7 @@ export function AnalyticsCharts({
     return map;
   }, [activeModelStats]);
 
-  // Stacked per-key breakdown
+  // Stacked per-key breakdown with deterministic segment sorting
   const keyBreakdown = useMemo(() => {
     return keys.map((key) => {
       const keyUsages = usage
@@ -196,7 +298,10 @@ export function AnalyticsCharts({
             color: modelColors.get(u.model_name) || "#10b981",
           };
         })
-        .sort((a, b) => b.count - a.count);
+        .sort((a, b) => {
+          if (b.count !== a.count) return b.count - a.count;
+          return a.modelId.localeCompare(b.modelId);
+        });
 
       const total = keyUsages.reduce((s, item) => s + item.count, 0);
       return {
@@ -212,7 +317,7 @@ export function AnalyticsCharts({
     [keyBreakdown]
   );
 
-  // Category distribution for Donut Chart
+  // Category distribution for Donut Chart with deterministic tie-breaking
   const categoryBreakdown = useMemo(() => {
     const map = new Map<ModelCategory, number>();
     for (const item of activeModelStats) {
@@ -230,12 +335,14 @@ export function AnalyticsCharts({
         value,
         pct: total > 0 ? Math.round((value / total) * 100) : 0,
       }))
-      .sort((a, b) => b.value - a.value);
+      .sort((a, b) => {
+        if (b.value !== a.value) return b.value - a.value;
+        return a.category.localeCompare(b.category);
+      });
 
     return { total, items };
   }, [activeModelStats, metric]);
 
-  // Matrix columns (top 10 active models + selected model if outside top 10)
   const matrixModels = useMemo(() => {
     const list = activeModelStats.slice(0, 10);
     if (selectedModelId && !list.some((m) => m.id === selectedModelId)) {
@@ -269,7 +376,6 @@ export function AnalyticsCharts({
     return map;
   }, [usage]);
 
-  // SVG Donut calculation
   const donutSegments = useMemo(() => {
     const radius = 54;
     const circumference = 2 * Math.PI * radius;
@@ -290,47 +396,22 @@ export function AnalyticsCharts({
     });
   }, [categoryBreakdown]);
 
-  // Live RPM Sparkline geometry
-  const sparkline = useMemo(() => {
-    const points = rpmHistory.length > 0 ? rpmHistory : [{ time: "Now", rpm: 0, rpd: 0 }];
-    const maxRpm = Math.max(4, ...points.map((p) => p.rpm));
-    const width = 320;
-    const height = 92;
-
-    const coords = points.map((p, idx) => {
-      const x = points.length === 1 ? width / 2 : (idx / (points.length - 1)) * width;
-      const y = height - 10 - (p.rpm / maxRpm) * (height - 22);
-      return { x, y, ...p };
-    });
-
-    const linePath = coords
-      .map((c, idx) => `${idx === 0 ? "M" : "L"} ${c.x.toFixed(1)} ${c.y.toFixed(1)}`)
-      .join(" ");
-    const areaPath =
-      coords.length > 0
-        ? `${linePath} L ${coords[coords.length - 1].x.toFixed(1)} ${height} L ${coords[0].x.toFixed(1)} ${height} Z`
-        : "";
-
-    return { coords, linePath, areaPath, maxRpm, width, height };
-  }, [rpmHistory]);
-
   const maxAllTimeKey = useMemo(
     () => Math.max(1, ...keys.map((k) => k.total_requests || 0)),
     [keys]
   );
 
   const hasFilter = Boolean(selectedKeyId || selectedModelId);
-  const currentRpm = rpmHistory[rpmHistory.length - 1]?.rpm || 0;
 
   return (
-    <section className="mb-10 flex flex-col gap-5">
+    <section className="flex flex-col gap-5">
       {/* Section Header & Metric Switcher */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 px-1">
         <div>
-          <h2 className="text-lg font-semibold text-white flex items-center gap-2">
-            <BarChart3 size={18} className="text-emerald-400" />
-            Traffic & Distribution Telemetry
-          </h2>
+          <h1 className="text-lg sm:text-xl font-semibold text-white flex items-center gap-2">
+            <BarChart3 size={19} className="text-emerald-400" />
+            Traffic &amp; Distribution Telemetry
+          </h1>
           <p className="text-xs text-neutral-500 mt-0.5">
             Inspect request distribution across API keys, model families, and live cooldown states.
           </p>
@@ -355,7 +436,7 @@ export function AnalyticsCharts({
             <button
               type="button"
               onClick={() => setMetric("rpd")}
-              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
                 metric === "rpd"
                   ? "bg-emerald-500 text-black shadow-sm"
                   : "text-neutral-400 hover:text-white"
@@ -366,7 +447,7 @@ export function AnalyticsCharts({
             <button
               type="button"
               onClick={() => setMetric("rpm")}
-              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
                 metric === "rpm"
                   ? "bg-cyan-400 text-black shadow-sm"
                   : "text-neutral-400 hover:text-white"
@@ -378,40 +459,48 @@ export function AnalyticsCharts({
         </div>
       </div>
 
-      {/* Top Row: Stacked Key × Model Breakdown + Category Donut */}
+      {/* Top Row: Stacked Key x Model Breakdown + Category Donut */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
-        {/* Graph 1: API Key × Model Stacked Breakdown */}
-        <div className="lg:col-span-7 bg-[#0a0a0a] border border-neutral-800 rounded-2xl p-5 flex flex-col justify-between shadow-xl">
+        {/* Graph 1: API Key x Model Stacked Breakdown */}
+        <div className="lg:col-span-7 bg-[#0a0a0a] border border-neutral-800 rounded-2xl p-5 flex flex-col justify-between shadow-xl min-w-0">
           <div>
-            <div className="flex flex-wrap items-start justify-between gap-2 mb-4">
-              <div>
-                <h3 className="text-sm font-semibold text-white flex items-center gap-2">
-                  <Flame size={15} className="text-emerald-400" />
-                  Requests by API Key & Model
-                </h3>
-                <p className="text-xs text-neutral-500 mt-0.5">
-                  Hover segments for exact counts; click a key or model chip to filter.
-                </p>
-              </div>
-              {hoveredSegment && (
-                <div className="bg-[#111] border border-neutral-700 rounded-xl px-3 py-1.5 text-xs flex flex-wrap items-center gap-2 animate-fade-in">
+            <div className="mb-3">
+              <h3 className="text-sm font-semibold text-white flex items-center gap-2">
+                <Flame size={15} className="text-emerald-400" />
+                Requests by API Key &amp; Model
+              </h3>
+              <p className="text-xs text-neutral-500 mt-0.5">
+                Hover bar segments for exact counts; click a key or model chip to cross-filter.
+              </p>
+            </div>
+
+            {/* Fixed-height readout bar eliminates layout shift and hover flicker */}
+            <div className="h-9 px-3 mb-4 rounded-xl bg-[#0f0f0f] border border-neutral-800/80 flex items-center gap-2 text-xs overflow-hidden">
+              {hoveredSegment ? (
+                <>
                   <span
                     className="w-2.5 h-2.5 rounded-sm shrink-0"
                     style={{ backgroundColor: hoveredSegment.color }}
                   />
-                  <span className="text-neutral-400">{hoveredSegment.keyName}</span>
-                  <span className="text-neutral-600">→</span>
-                  <span className="text-white font-medium">{hoveredSegment.modelName}</span>
-                  <span className="text-emerald-400 font-[family-name:var(--font-mono)] font-semibold">
+                  <span className="text-neutral-400 truncate">{hoveredSegment.keyName}</span>
+                  <span className="text-neutral-600 shrink-0">→</span>
+                  <span className="text-white font-medium truncate">
+                    {hoveredSegment.modelName}
+                  </span>
+                  <span className="ml-auto text-emerald-400 font-[family-name:var(--font-mono)] font-semibold shrink-0 tabular-nums">
                     {hoveredSegment.count.toLocaleString()} ({hoveredSegment.sharePct}%)
                   </span>
-                </div>
+                </>
+              ) : (
+                <span className="text-neutral-500 truncate">
+                  Hover any bar segment below to inspect exact model count &amp; share
+                </span>
               )}
             </div>
 
             {keys.length === 0 ? (
               <div className="py-12 text-center text-xs text-neutral-500 border border-dashed border-neutral-800 rounded-xl">
-                Add at least one Gemini API key below to visualize per-key traffic.
+                Add at least one Gemini API key to visualize per-key traffic.
               </div>
             ) : (
               <div className="space-y-3.5">
@@ -425,7 +514,7 @@ export function AnalyticsCharts({
                     <div
                       key={key.id}
                       onClick={() => onSelectKey(isSelected ? "" : key.id)}
-                      className={`p-3 rounded-xl border transition-all cursor-pointer ${
+                      className={`p-3 rounded-xl border transition-colors cursor-pointer ${
                         isSelected
                           ? "bg-emerald-500/5 border-emerald-500/40"
                           : "bg-[#0d0d0d] border-neutral-800/80 hover:border-neutral-700"
@@ -457,11 +546,14 @@ export function AnalyticsCharts({
                         </span>
                       </div>
 
-                      {/* Stacked Horizontal Bar */}
-                      <div className="h-3.5 w-full bg-neutral-900 rounded-lg overflow-hidden border border-neutral-800/80 flex">
+                      {/* Wrapper-level onMouseLeave prevents flashing between adjacent segments */}
+                      <div
+                        className="h-3.5 w-full bg-neutral-900 rounded-lg overflow-hidden border border-neutral-800/80 flex"
+                        onMouseLeave={() => setHoveredSegment(null)}
+                      >
                         {total > 0 ? (
                           <div
-                            className="h-full flex transition-all duration-500 overflow-hidden rounded-lg"
+                            className="h-full flex overflow-hidden rounded-lg"
                             style={{ width: `${barScalePct}%` }}
                           >
                             {segments.map((seg) => {
@@ -477,7 +569,7 @@ export function AnalyticsCharts({
                                     backgroundColor: seg.color,
                                     opacity: dimmed ? 0.25 : 1,
                                   }}
-                                  className="h-full border-r border-black/30 last:border-r-0 transition-opacity hover:brightness-110"
+                                  className="h-full min-w-[4px] border-r border-black/30 last:border-r-0 transition-opacity hover:brightness-110"
                                   onMouseEnter={() =>
                                     setHoveredSegment({
                                       keyName: key.name || "Key",
@@ -488,7 +580,6 @@ export function AnalyticsCharts({
                                       color: seg.color,
                                     })
                                   }
-                                  onMouseLeave={() => setHoveredSegment(null)}
                                   onClick={(e) => {
                                     e.stopPropagation();
                                     onSelectModel(
@@ -506,7 +597,6 @@ export function AnalyticsCharts({
                         )}
                       </div>
 
-                      {/* Compact inline model chips */}
                       {segments.length > 0 && (
                         <div className="flex flex-wrap gap-1.5 mt-2">
                           {segments.slice(0, 4).map((seg) => (
@@ -551,7 +641,6 @@ export function AnalyticsCharts({
             )}
           </div>
 
-          {/* Model Legend Strip */}
           {activeModelStats.length > 0 && (
             <div className="mt-4 pt-3 border-t border-neutral-800/80 flex flex-wrap gap-2">
               {activeModelStats.slice(0, 8).map((m) => {
@@ -562,7 +651,7 @@ export function AnalyticsCharts({
                     key={m.id}
                     type="button"
                     onClick={() => onSelectModel(isSelected ? "" : m.id)}
-                    className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] border transition-all ${
+                    className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] border transition-colors ${
                       isSelected
                         ? "bg-emerald-500/15 border-emerald-500/40 text-white"
                         : "bg-[#0d0d0d] border-neutral-800 text-neutral-400 hover:text-white"
@@ -581,11 +670,11 @@ export function AnalyticsCharts({
         </div>
 
         {/* Graph 2: Model Category Donut & Top Models Share */}
-        <div className="lg:col-span-5 bg-[#0a0a0a] border border-neutral-800 rounded-2xl p-5 flex flex-col justify-between shadow-xl">
+        <div className="lg:col-span-5 bg-[#0a0a0a] border border-neutral-800 rounded-2xl p-5 flex flex-col justify-between shadow-xl min-w-0">
           <div>
             <h3 className="text-sm font-semibold text-white flex items-center gap-2 mb-1">
               <PieChart size={15} className="text-cyan-400" />
-              Traffic Share by Model & Type
+              Traffic Share by Model &amp; Type
             </h3>
             <p className="text-xs text-neutral-500 mb-5">
               Distribution across Flash, Flash-Lite, Pro/4, Gemma, and specialized modalities.
@@ -597,7 +686,6 @@ export function AnalyticsCharts({
               </div>
             ) : (
               <div className="flex flex-col sm:flex-row lg:flex-col xl:flex-row items-center gap-6">
-                {/* Donut SVG */}
                 <div className="relative w-36 h-36 shrink-0 flex items-center justify-center">
                   <svg viewBox="0 0 140 140" className="w-full h-full -rotate-90">
                     <circle
@@ -619,7 +707,6 @@ export function AnalyticsCharts({
                         strokeWidth="16"
                         strokeDasharray={`${seg.strokeLength} ${seg.circumference}`}
                         strokeDashoffset={seg.dashOffset}
-                        className="transition-all duration-700"
                       />
                     ))}
                   </svg>
@@ -633,7 +720,6 @@ export function AnalyticsCharts({
                   </div>
                 </div>
 
-                {/* Category Legend */}
                 <div className="w-full flex-1 space-y-2.5">
                   {categoryBreakdown.items.map((item) => (
                     <div key={item.category} className="flex items-center justify-between text-xs">
@@ -657,7 +743,6 @@ export function AnalyticsCharts({
             )}
           </div>
 
-          {/* Top 5 Active Models Ranked Bars */}
           {activeModelStats.length > 0 && (
             <div className="mt-5 pt-4 border-t border-neutral-800/80 space-y-2.5">
               <div className="text-[11px] uppercase tracking-wider text-neutral-500 font-semibold">
@@ -688,7 +773,7 @@ export function AnalyticsCharts({
                     </div>
                     <div className="h-1.5 w-full bg-neutral-900 rounded-full overflow-hidden">
                       <div
-                        className="h-full rounded-full transition-all duration-500"
+                        className="h-full rounded-full"
                         style={{ width: `${widthPct}%`, backgroundColor: color }}
                       />
                     </div>
@@ -700,36 +785,44 @@ export function AnalyticsCharts({
         </div>
       </div>
 
-      {/* Bottom Row: Key × Model Heatmap Matrix + Live RPM Pulse & Key Efficiency */}
+      {/* Bottom Row: Key x Model Heatmap Matrix + Live RPM Pulse & Key Efficiency */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
-        {/* Graph 3: Key × Model Activity & Cooldown Matrix */}
-        <div className="lg:col-span-8 bg-[#0a0a0a] border border-neutral-800 rounded-2xl p-5 shadow-xl overflow-hidden">
-          <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
-            <div>
-              <h3 className="text-sm font-semibold text-white flex items-center gap-2">
-                <Grid3X3 size={15} className="text-emerald-400" />
-                Key × Model Heatmap Matrix
-              </h3>
-              <p className="text-xs text-neutral-500 mt-0.5">
-                Exact request counts and active 429 cooldown flags across every key-model pair.
-              </p>
-            </div>
-            {hoveredCell && (
-              <div className="bg-[#111] border border-neutral-700 rounded-xl px-3 py-1.5 text-xs flex flex-wrap items-center gap-2 animate-fade-in">
-                <span className="text-white font-semibold">{hoveredCell.keyName}</span>
-                <span className="text-neutral-500">×</span>
-                <span className="text-cyan-300 font-[family-name:var(--font-mono)]">
+        {/* Graph 3: Key x Model Activity & Cooldown Matrix */}
+        <div className="lg:col-span-8 bg-[#0a0a0a] border border-neutral-800 rounded-2xl p-5 shadow-xl overflow-hidden min-w-0">
+          <div className="mb-3">
+            <h3 className="text-sm font-semibold text-white flex items-center gap-2">
+              <Grid3X3 size={15} className="text-emerald-400" />
+              Key × Model Heatmap Matrix
+            </h3>
+            <p className="text-xs text-neutral-500 mt-0.5">
+              Exact request counts and active 429 cooldown flags across every key-model pair.
+            </p>
+          </div>
+
+          {/* Fixed-height readout bar prevents layout-shift flicker when hovering cells */}
+          <div className="h-9 px-3 mb-4 rounded-xl bg-[#0f0f0f] border border-neutral-800/80 flex items-center gap-2 text-xs overflow-hidden">
+            {hoveredCell ? (
+              <>
+                <span className="text-white font-semibold truncate max-w-[140px]">
+                  {hoveredCell.keyName}
+                </span>
+                <span className="text-neutral-500 shrink-0">×</span>
+                <span className="text-cyan-300 font-[family-name:var(--font-mono)] truncate">
                   {hoveredCell.modelId}
                 </span>
-                <span className="text-emerald-400 font-[family-name:var(--font-mono)] font-semibold">
+                <span className="ml-auto text-emerald-400 font-[family-name:var(--font-mono)] font-semibold shrink-0 tabular-nums">
                   {hoveredCell.rpd} today · {hoveredCell.rpm} rpm
                 </span>
                 {hoveredCell.coolingReason && (
-                  <span className="text-amber-300 text-[10px] px-1.5 py-0.5 rounded bg-amber-500/15 border border-amber-500/30">
-                    {hoveredCell.coolingReason === "daily" ? "Cooling (PT reset)" : "Cooling (RPM)"}
+                  <span className="text-amber-300 text-[10px] px-1.5 py-0.5 rounded bg-amber-500/15 border border-amber-500/30 shrink-0">
+                    {hoveredCell.coolingReason === "daily" ? "Cooling (PT)" : "Cooling (RPM)"}
                   </span>
                 )}
-              </div>
+              </>
+            ) : (
+              <span className="text-neutral-500 truncate">
+                Hover any cell to inspect pair traffic &amp; cooldown state · Click to filter
+              </span>
             )}
           </div>
 
@@ -761,7 +854,7 @@ export function AnalyticsCharts({
                     ))}
                   </tr>
                 </thead>
-                <tbody>
+                <tbody onMouseLeave={() => setHoveredCell(null)}>
                   {keys.map((k) => (
                     <tr key={k.id}>
                       <td
@@ -796,13 +889,11 @@ export function AnalyticsCharts({
                                 setHoveredCell({
                                   keyName: k.name || "Key",
                                   modelId: m.id,
-                                  modelName: m.name,
                                   rpd,
                                   rpm,
                                   coolingReason: cd?.reason,
                                 })
                               }
-                              onMouseLeave={() => setHoveredCell(null)}
                               onClick={() => {
                                 onSelectKey(k.id);
                                 onSelectModel(m.id);
@@ -814,7 +905,7 @@ export function AnalyticsCharts({
                                     ? `rgba(16, 185, 129, ${(intensity * 0.55).toFixed(2)})`
                                     : "#0f0f0f",
                               }}
-                              className={`h-9 rounded-lg border flex items-center justify-center gap-1 font-[family-name:var(--font-mono)] tabular-nums cursor-pointer transition-transform hover:scale-[1.04] ${
+                              className={`h-9 rounded-lg border flex items-center justify-center gap-1 font-[family-name:var(--font-mono)] tabular-nums cursor-pointer transition-colors duration-150 hover:ring-1 hover:ring-white/40 hover:brightness-110 ${
                                 cd
                                   ? "border-amber-500/40 text-amber-300"
                                   : val > 0
@@ -822,10 +913,10 @@ export function AnalyticsCharts({
                                     : "border-neutral-800/60 text-neutral-700"
                               }`}
                             >
-                              <span>{val}</span>
+                              <span className="pointer-events-none">{val}</span>
                               {cd && (
                                 <span
-                                  className="w-1.5 h-1.5 rounded-full bg-amber-400"
+                                  className="w-1.5 h-1.5 rounded-full bg-amber-400 pointer-events-none"
                                   title="Currently cooling down"
                                 />
                               )}
@@ -842,86 +933,13 @@ export function AnalyticsCharts({
         </div>
 
         {/* Graph 4: Live RPM Pulse + Key Throughput vs Errors */}
-        <div className="lg:col-span-4 bg-[#0a0a0a] border border-neutral-800 rounded-2xl p-5 flex flex-col justify-between gap-5 shadow-xl">
-          {/* Live RPM Pulse Sparkline */}
-          <div>
-            <div className="flex items-center justify-between mb-1">
-              <h3 className="text-sm font-semibold text-white flex items-center gap-2">
-                <Activity size={15} className="text-cyan-400" />
-                Live RPM Pulse
-              </h3>
-              <span className="text-xs font-[family-name:var(--font-mono)] text-cyan-400 font-semibold tabular-nums">
-                {currentRpm.toLocaleString()} req/min
-              </span>
-            </div>
-            <p className="text-xs text-neutral-500 mb-3">
-              Rolling throughput captured across live 6s telemetry polls.
-            </p>
+        <div className="lg:col-span-4 bg-[#0a0a0a] border border-neutral-800 rounded-2xl p-5 flex flex-col justify-between gap-5 shadow-xl min-w-0">
+          <LiveRpmPulseCard rpmHistory={rpmHistory} />
 
-            <div className="bg-[#0d0d0d] border border-neutral-800/80 rounded-xl p-3">
-              <svg
-                viewBox={`0 0 ${sparkline.width} ${sparkline.height}`}
-                className="w-full h-24 overflow-visible"
-              >
-                <defs>
-                  <linearGradient id="rpmPulseGrad" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor="#06b6d4" stopOpacity="0.35" />
-                    <stop offset="100%" stopColor="#06b6d4" stopOpacity="0" />
-                  </linearGradient>
-                </defs>
-                {/* Horizontal guide lines */}
-                <line
-                  x1="0"
-                  y1={sparkline.height - 10}
-                  x2={sparkline.width}
-                  y2={sparkline.height - 10}
-                  stroke="#262626"
-                  strokeDasharray="3 3"
-                />
-                <line
-                  x1="0"
-                  y1={sparkline.height / 2}
-                  x2={sparkline.width}
-                  y2={sparkline.height / 2}
-                  stroke="#1f1f1f"
-                  strokeDasharray="3 3"
-                />
-                {sparkline.areaPath && (
-                  <path d={sparkline.areaPath} fill="url(#rpmPulseGrad)" />
-                )}
-                {sparkline.linePath && (
-                  <path
-                    d={sparkline.linePath}
-                    fill="none"
-                    stroke="#06b6d4"
-                    strokeWidth="2.2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                )}
-                {sparkline.coords.map((pt, i) => (
-                  <circle
-                    key={i}
-                    cx={pt.x}
-                    cy={pt.y}
-                    r={i === sparkline.coords.length - 1 ? 3.5 : 2}
-                    fill={i === sparkline.coords.length - 1 ? "#22d3ee" : "#0891b2"}
-                  />
-                ))}
-              </svg>
-              <div className="flex justify-between text-[10px] text-neutral-600 font-[family-name:var(--font-mono)] mt-1">
-                <span>{rpmHistory[0]?.time || "Now"}</span>
-                <span>Peak: {Math.max(0, ...rpmHistory.map((r) => r.rpm))} rpm</span>
-                <span>{rpmHistory[rpmHistory.length - 1]?.time || "Now"}</span>
-              </div>
-            </div>
-          </div>
-
-          {/* All-Time Volume vs Errors by Key */}
           <div>
             <h3 className="text-sm font-semibold text-white flex items-center gap-2 mb-1">
               <ShieldCheck size={15} className="text-emerald-400" />
-              All-Time Pool Volume & Errors
+              All-Time Pool Volume &amp; Errors
             </h3>
             <p className="text-xs text-neutral-500 mb-3">
               Cumulative attempts vs upstream errors per key.
@@ -950,19 +968,17 @@ export function AnalyticsCharts({
                         </span>
                         <span className="font-[family-name:var(--font-mono)] tabular-nums text-[11px]">
                           <span className="text-emerald-400">{reqs.toLocaleString()}</span>
-                          {errs > 0 && (
-                            <span className="text-red-400 ml-1.5">({errs} err)</span>
-                          )}
+                          {errs > 0 && <span className="text-red-400 ml-1.5">({errs} err)</span>}
                         </span>
                       </div>
                       <div className="h-2 w-full bg-neutral-900 rounded-full overflow-hidden flex">
                         <div
-                          className="h-full bg-emerald-500/80 transition-all duration-500"
+                          className="h-full bg-emerald-500/80"
                           style={{ width: `${okPct}%` }}
                         />
                         {errs > 0 && (
                           <div
-                            className="h-full bg-red-500/80 transition-all duration-500"
+                            className="h-full bg-red-500/80"
                             style={{ width: `${errPct}%` }}
                           />
                         )}

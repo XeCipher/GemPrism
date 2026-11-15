@@ -1,15 +1,14 @@
 <div align="center">
   <br />
-  <img src="public/apple-icon.png" alt="GemPrism Logo" width="96" />
+  <img src="./public/apple-icon.png" alt="GemPrism Logo" width="96" />
   <br /><br />
 
   <h1>GemPrism</h1>
   <p><strong>One gateway. Every key. Zero dropped requests.</strong></p>
   <p>
     Pool your Gemini API keys into a single high-availability gateway.<br />
-    Dynamic model discovery, cascading failover, and a live telemetry dashboard, all in one place.
+    Dynamic model discovery, cascading failover, request tracing, and a live telemetry dashboard, all in one place.
   </p>
-
   <br />
 
   <a href="https://gemprism.vercel.app/">
@@ -39,7 +38,6 @@
   <img src="https://img.shields.io/badge/Supabase-PostgreSQL-3ECF8E?style=flat-square&amp;logo=supabase&amp;logoColor=white" alt="Supabase PostgreSQL" />
   &nbsp;
   <img src="https://img.shields.io/badge/Deployed-Vercel-000000?style=flat-square&amp;logo=vercel&amp;logoColor=white" alt="Deployed on Vercel" />
-
   <br /><br />
 </div>
 
@@ -49,7 +47,7 @@
 
 GemPrism is a transparent proxy layer for the Google Gemini API. You add your own API keys, receive a single gateway token, and all requests through that token are distributed across your key pool in real time.
 
-Instead of maintaining static rate-limit tables, GemPrism discovers live models directly from the Gemini API, learns rate limits dynamically from upstream error signals, isolates cooldowns per `(key, model)` pair, and cascades gracefully down compatible models whenever a tier is exhausted.
+Instead of maintaining static rate-limit tables, GemPrism discovers live models directly from the Gemini API, learns rate limits dynamically from upstream error signals, isolates cooldowns per `(key, model)` pair, traces every failover hop with millisecond waterfall timings, and cascades gracefully down compatible models whenever a tier is exhausted.
 
 There is no new SDK to learn. Two configuration lines are all that changes in your existing code.
 
@@ -61,9 +59,10 @@ There is no new SDK to learn. Two configuration lines are all that changes in yo
 | --- | --- |
 | Live Model Discovery | Queries Google's `v1beta/models` endpoint automatically using your keys and classifies new releases without manual updates. |
 | Cascading Key & Model Failover | Tries every healthy key first; when all keys exhaust a model (`429`, `503`, `404`), steps down smoothly (e.g., `Flash` → older `Flash` → `Flash-Lite` → `Hydrogen` / `Pro` → `Gemma`). |
+| Request & Failover Tracer | Inspect recent requests down to millisecond arrival timestamps, requested vs. settled model, complete failover chain, phase timing splits, and per-hop waterfall bars. |
 | Limit-Agnostic Cooldowns | Detects `limit: 0`, `PerDay` resets (Pacific Time midnight), and `RetryInfo` delays directly from Google error responses. |
 | Dynamic `-latest` Resolution | Automatically maps `gemini-flash-latest`, `gemini-flash-lite-latest`, `gemini-pro-latest`, and future `-latest` tags to the newest matching live model. |
-| Interactive Telemetry Dashboard | Stacked key-by-model charts, category donut breakdown, key × model cooldown heatmap, live RPM pulse, and searchable/filterable catalog. |
+| Multi-Page Telemetry Dashboard | Dedicated Overview, Requests Inspector, Analytics (stacked key-by-model charts, donut, heatmap), API Keys Pool, and searchable Model Catalog. |
 | Drop-In SDK Compatibility | Works with `@google/genai` and raw REST endpoints. Change `apiKey` and `baseUrl`, nothing else. |
 
 ---
@@ -97,7 +96,7 @@ npm install
 
 Create a `.env.local` file in the project root:
 
-```dotenv
+```env
 NEXT_PUBLIC_SUPABASE_URL=your_supabase_project_url
 NEXT_PUBLIC_SUPABASE_ANON_KEY=your_supabase_anon_key
 SUPABASE_SERVICE_ROLE_KEY=your_supabase_service_role_key
@@ -151,9 +150,22 @@ create table model_usage (
   rpm_window_start bigint,
   unique (api_key_id, model_name)
 );
+
+-- Optional: Persistent request & failover traces
+-- (GemPrism falls back automatically if this table is omitted)
+create table request_logs (
+  id          uuid primary key default gen_random_uuid(),
+  user_id     uuid references auth.users not null,
+  created_at  timestamptz default now(),
+  received_at bigint not null,
+  trace_data  jsonb not null
+);
+
+create index idx_request_logs_user_time
+  on request_logs (user_id, received_at desc);
 ```
 
-Enable Row Level Security on all three tables and add appropriate policies so users can only read and write their own rows.
+Enable Row Level Security on all tables and add appropriate policies so users can only read and write their own rows.
 
 ### Integration
 
@@ -177,7 +189,7 @@ const response = await ai.models.generateContent({
 console.log(response.text);
 ```
 
-All model identifiers, request shapes, and response formats are identical to the native Gemini API. When failover occurs, GemPrism attaches `X-Gemprism-Model`, `X-Gemprism-Original-Model`, and `X-Gemprism-Fallback` headers to the response.
+All model identifiers, request shapes, and response formats are identical to the native Gemini API. When failover occurs, GemPrism attaches `X-Gemprism-Model`, `X-Gemprism-Original-Model`, `X-Gemprism-Fallback`, and `X-Gemprism-Duration-Ms` headers to the response.
 
 ---
 
@@ -196,7 +208,7 @@ Your App -> GemPrism Proxy -> Key Pool & Model Failover -> Google Generative Lan
 5. For each model in the chain, healthy keys not in per-model cooldown are sorted by lowest daily and per-minute load.
 6. On `429`, the error payload is parsed (`limit: 0`, `PerDay`, or `RetryInfo`), and only that `(key, model)` pair cools down while traffic moves to the next key or next model.
 7. On `403`, the key is retired as dead; on `503` or `404`, routing cascades to the next compatible model.
-8. On success, per-key and per-model counters are updated atomically.
+8. On completion, per-key counters, per-model usage, and the full request/timing trace are persisted asynchronously.
 
 ---
 
@@ -208,22 +220,33 @@ GemPrism/
     ├── app/
     │   ├── api/
     │   │   ├── admin/
-    │   │   │   ├── keys/route.ts          # Key revive, cooldown reset, and deletion
-    │   │   │   └── stats/route.ts         # Live catalog + telemetry endpoint
-    │   │   ├── keepalive/route.ts         # Supabase keepalive probe
-    │   │   └── proxy/[...path]/route.ts  # Core gateway proxy with cascading failover
-    │   ├── dashboard/page.tsx             # Command center UI and model catalog
-    │   ├── login/page.tsx                 # Sign in and sign up
-    │   └── page.tsx                       # Marketing landing page
+    │   │   │   ├── keys/route.ts           # Key revive, cooldown reset, and deletion
+    │   │   │   ├── stats/route.ts          # Live catalog, telemetry & traces endpoint
+    │   │   │   └── traces/route.ts         # Request trace retrieval & clear endpoint
+    │   │   ├── keepalive/route.ts          # Supabase keepalive probe
+    │   │   └── proxy/[...path]/route.ts   # Core gateway proxy with trace instrumentation
+    │   ├── dashboard/
+    │   │   ├── layout.tsx                  # Shared dashboard provider & shell
+    │   │   ├── page.tsx                    # Executive overview & latest request snapshot
+    │   │   ├── requests/page.tsx           # Deep request & failover trace inspector
+    │   │   ├── analytics/page.tsx          # Interactive charts & heatmap matrix
+    │   │   ├── keys/page.tsx               # API key pool & per-key model usage
+    │   │   └── models/page.tsx             # Searchable live model catalog
+    │   ├── login/page.tsx                  # Sign in and sign up
+    │   └── page.tsx                        # Marketing landing page
     ├── components/
-    │   ├── AnalyticsCharts.tsx            # Interactive SVG/CSS graphs & heatmap
-    │   ├── CodeBlock.tsx                  # Syntax-highlighted code display
-    │   └── Logo.tsx                       # GemPrism SVG mark
+    │   ├── AnalyticsCharts.tsx             # Flicker-free graphs, RPM pulse & heatmap
+    │   ├── CodeBlock.tsx                   # Syntax-highlighted code display
+    │   ├── DashboardContext.tsx            # Shared auth, polling & telemetry state
+    │   ├── DashboardShell.tsx              # Desktop tabs & mobile bottom navigation
+    │   ├── Logo.tsx                        # GemPrism SVG mark
+    │   └── RequestTraceInspector.tsx       # Waterfall timeline & model chain inspector
     └── lib/
-        ├── geminiModels.ts                # Live discovery, alias resolution & fallback engine
-        ├── modelLimits.ts                 # Compatibility re-exports
-        ├── supabase.ts                    # Client-side Supabase instance
-        └── supabaseAdmin.ts               # Server-side Supabase admin instance
+        ├── geminiModels.ts                 # Live discovery, alias resolution & fallback engine
+        ├── modelLimits.ts                  # Compatibility re-exports
+        ├── requestTraces.ts                # Request trace persistence & compat fallback
+        ├── supabase.ts                     # Client-side Supabase instance
+        └── supabaseAdmin.ts                # Server-side Supabase admin instance
 ```
 
 ---

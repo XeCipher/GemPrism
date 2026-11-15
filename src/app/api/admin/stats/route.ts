@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getSupabaseAdminClient } from "@/lib/supabaseAdmin";
 import { discoverModelsForKeys, getQuotaResetDateStr } from "@/lib/geminiModels";
+import { getRecentRequestTraces, TRACE_PREFIX } from "@/lib/requestTraces";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -50,10 +51,11 @@ export async function GET(req: Request) {
 
     const userId = userAuth.user.id;
 
-    const [tokenReq, keysReq, usageReq] = await Promise.all([
+    const [tokenReq, keysReq, usageReq, traceResult] = await Promise.all([
       supabaseAdmin.from("gateway_tokens").select("token").eq("user_id", userId).maybeSingle(),
       supabaseAdmin.from("api_keys").select("*").eq("user_id", userId),
       supabaseAdmin.from("model_usage").select("*").eq("user_id", userId),
+      getRecentRequestTraces(userId, 30),
     ]);
 
     let userToken = tokenReq.data?.token;
@@ -62,15 +64,15 @@ export async function GET(req: Request) {
       await supabaseAdmin.from("gateway_tokens").insert({ user_id: userId, token: userToken });
     }
 
-    const keys = ((keysReq.data || []) as RawKeyRow[]).sort((a, b) =>
-      (a.name || "").localeCompare(b.name || "")
-    );
+    const keys = ((keysReq.data || []) as RawKeyRow[]).sort((a, b) => {
+      const nameCmp = (a.name || "").localeCompare(b.name || "");
+      return nameCmp !== 0 ? nameCmp : a.id.localeCompare(b.id);
+    });
     const allRows = (usageReq.data || []) as RawUsageRow[];
 
     const now = Date.now();
     const todayStr = getQuotaResetDateStr();
 
-    // Split model usage telemetry from per-(key, model) cooldown records
     const usage: Array<{
       api_key_id: string;
       model_name: string;
@@ -89,6 +91,10 @@ export async function GET(req: Request) {
     }> = [];
 
     for (const row of allRows) {
+      if (row.model_name.startsWith(TRACE_PREFIX)) {
+        continue;
+      }
+
       if (row.model_name.startsWith(COOLDOWN_PREFIX)) {
         const modelName = row.model_name.slice(COOLDOWN_PREFIX.length);
         const until = row.rpm_window_start || 0;
@@ -121,14 +127,22 @@ export async function GET(req: Request) {
       });
     }
 
-    // Dynamically discover models using live API keys
+    // Deterministic ordering keeps chart bars, segments, and heatmap columns stable across polls
+    usage.sort((a, b) => {
+      const kCmp = a.api_key_id.localeCompare(b.api_key_id);
+      return kCmp !== 0 ? kCmp : a.model_name.localeCompare(b.model_name);
+    });
+    cooldowns.sort((a, b) => {
+      const kCmp = a.api_key_id.localeCompare(b.api_key_id);
+      return kCmp !== 0 ? kCmp : a.model_name.localeCompare(b.model_name);
+    });
+
     const discovery = await discoverModelsForKeys(keys, {
       userId,
       forceRefresh,
       historicalModelIds: usage.map((u) => u.model_name),
     });
 
-    // Hydrate key status and attach per-model cooldown metadata
     const cooldownsByKey = new Map<string, typeof cooldowns>();
     for (const cd of cooldowns) {
       const list = cooldownsByKey.get(cd.api_key_id) || [];
@@ -162,6 +176,8 @@ export async function GET(req: Request) {
       catalogMeta: discovery.meta,
       usage,
       cooldowns,
+      traces: traceResult.traces,
+      traceStorageMode: traceResult.storageMode,
       todayStr,
       summary: {
         total_requests: totalRequests,

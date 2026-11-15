@@ -354,7 +354,6 @@ function detectCategory(id: string, methods: string[] = []): ModelCategory {
 }
 
 function extractVersionAndTier(id: string, category: ModelCategory): { versionParts: number[]; tierWeight: number } {
-  // Match standard model version patterns like gemini-3.8-flash, gemma-4-31b-it, lyria-3.5, gemini-4-carbon
   let major = 0;
   let minor = 0;
   let patch = 0;
@@ -362,7 +361,7 @@ function extractVersionAndTier(id: string, category: ModelCategory): { versionPa
   // Special handling for nano-banana versions so 2.1 ranks right alongside newer image models
   const nanoMatch = id.match(/nano-banana-(\d+)(?:\.(\d+))?/);
   if (nanoMatch) {
-    major = Number(nanoMatch[1]) + 2; // 2.1 -> 4.1 so Nano Banana 2.1 > 3.1-flash-image
+    major = Number(nanoMatch[1]) + 2;
     minor = Number(nanoMatch[2] || 0);
   } else {
     const verMatch = id.match(/(?:gemini|gemma|imagen|lyria|veo|omni|robotics-er|decision)[a-z-]*?-(\d+)(?:\.(\d+))?(?:\.(\d+))?/);
@@ -373,14 +372,12 @@ function extractVersionAndTier(id: string, category: ModelCategory): { versionPa
     }
   }
 
-  // Extract parameter size (e.g. gemma-4-31b-it -> 31, gemma-4-26b -> 26)
   let paramSize = 0;
   const paramMatch = id.match(/-(\d+)b(?:-|$)/);
   if (paramMatch) {
     paramSize = Number(paramMatch[1]);
   }
 
-  // Tier ordering within the same version (higher = stronger / flagship)
   let tierWeight = paramSize;
   if (id.includes("ultra")) tierWeight += 50;
   if (id.includes("carbon")) tierWeight += 40;
@@ -438,7 +435,6 @@ export function classifyModel(
     id === "gemini-pro-latest" ||
     (isLatestSuffix && !id.includes("native-audio"));
 
-  // Check if Google explicitly provided baseModelId or "Points to <model>" in description
   let explicitAliasTarget: string | null = null;
   if (raw?.baseModelId) {
     const cleanedBase = cleanModelId(raw.baseModelId);
@@ -481,14 +477,6 @@ function compareVersionsDesc(a: ModelCatalogItem, b: ModelCatalogItem): number {
   return 0;
 }
 
-/**
- * Deterministic sorting used both for UI catalog display and fallback sequencing:
- * 1. Category order (Flash -> Flash-Lite -> Pro/4 -> Gemma -> Image -> TTS -> Live -> Media -> Embedding -> Specialized)
- * 2. -latest aliases first within their category for quick discovery
- * 3. Highest semantic version first (e.g. 4.0 > 3.8 > 3.6 > 3.5 > 3.1 > 3.0 > 2.5)
- * 4. Higher tier weight first (Carbon > Argon > Hydrogen; 31B > 26B)
- * 5. Stable releases before preview/pinned revisions
- */
 export function compareModelsInCatalog(a: ModelCatalogItem, b: ModelCatalogItem): number {
   const catDiff = CATEGORY_ORDER.indexOf(a.category) - CATEGORY_ORDER.indexOf(b.category);
   if (catDiff !== 0) return catDiff;
@@ -516,19 +504,16 @@ export function resolveModelAlias(
   const byId = new Map(catalog.map((m) => [m.id, m]));
   const existing = byId.get(cleaned) || classifyModel(cleaned, null, "live");
 
-  // 1. Trust explicit alias target if present in live catalog
   if (existing.aliasTarget && byId.has(existing.aliasTarget)) {
     return byId.get(existing.aliasTarget)!;
   }
 
-  // 2. Handle -latest dynamic resolution
   if (cleaned.endsWith("-latest")) {
     const stripped = cleaned.replace(/-latest$/, "");
     if (byId.has(stripped) && !byId.get(stripped)!.isAlias) {
       return byId.get(stripped)!;
     }
 
-    // Match non-alias candidates in the same category/family
     const candidates = catalog
       .filter((m) => {
         if (m.isAlias || m.id.endsWith("-latest")) return false;
@@ -559,10 +544,6 @@ export function resolveModelAlias(
   return existing;
 }
 
-/**
- * Hydrates `aliasTarget` across all `-latest` items in a catalog so the UI can display
- * what each alias currently points to.
- */
 function hydrateCatalogAliases(models: ModelCatalogItem[]): ModelCatalogItem[] {
   return models.map((item) => {
     if (!item.isAlias) return item;
@@ -636,7 +617,6 @@ export async function discoverModelsForKeys(
     source = "live";
     syncedAt = cached.syncedAt;
   } else {
-    // Prioritize healthy keys first, then cooling keys (since /models list doesn't burn generation quota)
     const candidateKeys = [
       ...keys.filter((k) => k.status === "healthy" || !k.status),
       ...keys.filter((k) => k.status === "cooling"),
@@ -661,14 +641,12 @@ export async function discoverModelsForKeys(
     }
   }
 
-  // Fallback to stale cache if live fetch failed temporarily
   if (!baseModels && cached) {
     baseModels = cached.models;
     source = "live";
     syncedAt = cached.syncedAt;
   }
 
-  // Fallback to seed catalog only if user has 0 working keys yet
   if (!baseModels) {
     baseModels = SEED_MODEL_DEFS.map((s) =>
       classifyModel(s.id, { name: s.id, displayName: s.name, supportedGenerationMethods: s.methods }, "seed")
@@ -676,14 +654,20 @@ export async function discoverModelsForKeys(
     source = keys.length === 0 ? "seed" : "empty";
   }
 
-  // Merge any historical model IDs recorded in Supabase telemetry so past charts never lose metadata
   const map = new Map<string, ModelCatalogItem>();
   for (const model of baseModels) {
     map.set(model.id, model);
   }
   for (const histId of options.historicalModelIds || []) {
     const cleaned = cleanModelId(histId);
-    if (!cleaned || cleaned.startsWith("__cooldown:") || cleaned === "default") continue;
+    if (
+      !cleaned ||
+      cleaned.startsWith("__cooldown:") ||
+      cleaned.startsWith("__trace:") ||
+      cleaned === "default"
+    ) {
+      continue;
+    }
     if (!map.has(cleaned)) {
       map.set(cleaned, classifyModel(cleaned, null, "historical"));
     }
@@ -711,9 +695,6 @@ function isActionCompatible(model: ModelCatalogItem, requiredMethod: string | nu
 
 /**
  * Constructs an intelligent cascading fallback chain for ANY requested model.
- * - Text requests stay in compatible text models and cascade from stronger/requested -> older same tier ->
- *   lighter tier (Flash-Lite) -> efficient frontier (Gemini 4 Hydrogen) -> Pro -> Gemma open weights.
- * - Image, TTS, Live, Media, and Embedding requests cascade strictly within their own modality.
  */
 export function buildModelFallbackChain(
   requestedModelId: string,
@@ -737,7 +718,6 @@ export function buildModelFallbackChain(
       .filter((m) => m.category === cat)
       .sort(compareModelsInCatalog);
 
-  // Determine how a model ranks relative to the start model inside its own category
   const sortDescendingFromStart = (items: ModelCatalogItem[], target: ModelCatalogItem) => {
     const equalOrLower: ModelCatalogItem[] = [];
     const higher: ModelCatalogItem[] = [];
@@ -745,7 +725,6 @@ export function buildModelFallbackChain(
     for (const item of items) {
       if (item.id === target.id) continue;
       const cmp = compareModelsInCatalog(item, target);
-      // In compareModelsInCatalog, higher/newer items sort BEFORE target (cmp < 0)
       if (cmp >= 0) {
         equalOrLower.push(item);
       } else {
@@ -774,7 +753,6 @@ export function buildModelFallbackChain(
     const { equalOrLower, higher } = sortDescendingFromStart(allFlash, resolved);
     const allLite = byCategory("flash-lite");
     const allPro = byCategory("pro");
-    // Put efficient Gemini 4 Hydrogen first among frontier/pro models since it carries free-tier quota
     const efficientPro = allPro.filter((m) => m.id.includes("hydrogen"));
     const remainingPro = allPro.filter((m) => !m.id.includes("hydrogen"));
     const allGemma = byCategory("gemma");
@@ -821,7 +799,6 @@ export function buildModelFallbackChain(
     pushUnique(allLite);
     pushUnique(allFlash);
   } else if (cat === "media") {
-    // Keep Omni, Lyria, and Veo inside their respective sub-families
     const prefix = startId.startsWith("veo")
       ? "veo"
       : startId.startsWith("lyria")
@@ -832,7 +809,6 @@ export function buildModelFallbackChain(
     pushUnique(equalOrLower);
     pushUnique(higher);
   } else {
-    // image, tts, live, embedding, specialized: stay inside same modality
     const sameCat = byCategory(cat);
     const { equalOrLower, higher } = sortDescendingFromStart(sameCat, resolved);
     pushUnique(equalOrLower);
@@ -843,8 +819,7 @@ export function buildModelFallbackChain(
 }
 
 /**
- * Parses Google Gemini API error payloads to determine exact cooldown duration & recovery strategy
- * without relying on any hardcoded rate-limit tables.
+ * Parses Google Gemini API error payloads to determine exact cooldown duration & recovery strategy.
  */
 export function classifyErrorResponse(
   status: number,
@@ -893,8 +868,7 @@ export function classifyErrorResponse(
     const nextResetMs = getNextQuotaResetTimestampMs(nowMs);
     const untilMidnightMs = Math.max(60_000, nextResetMs - nowMs);
 
-    // Check explicit limit: 0 (no quota on this key/tier for this model)
-    if (/limit:\s*0\b/i.test(bodyText) || lower.includes("free_tier_requests") && lower.includes("limit: 0")) {
+    if (/limit:\s*0\b/i.test(bodyText) || (lower.includes("free_tier_requests") && lower.includes("limit: 0"))) {
       return {
         kind: "limit_zero",
         cooldownMs: untilMidnightMs,
@@ -903,7 +877,6 @@ export function classifyErrorResponse(
       };
     }
 
-    // Check daily quota exhaustion indicators inside QuotaFailure details or message
     if (
       lower.includes("perday") ||
       lower.includes("per_day") ||
@@ -919,7 +892,6 @@ export function classifyErrorResponse(
       };
     }
 
-    // Parse RetryInfo retryDelay if provided (e.g. "retryDelay": "23s" or "retry in 18.4s")
     let retryDelayMs = 60_000;
     const jsonDelayMatch = bodyText.match(/"retryDelay"\s*:\s*"(\d+(?:\.\d+)?)s"/i);
     const textDelayMatch = bodyText.match(/retry in\s+(\d+(?:\.\d+)?)s/i);
