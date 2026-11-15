@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+import { after, NextResponse } from "next/server";
 import { getSupabaseAdminClient } from "@/lib/supabaseAdmin";
 import {
   buildModelFallbackChain,
@@ -35,7 +35,44 @@ interface ModelUsageRow {
   rpm_window_start: number | null;
 }
 
+interface HotCooldownEntry {
+  until: number;
+  isDaily: boolean;
+  todayStr: string;
+  statusCode: number;
+}
+
+interface PendingKeyDelta {
+  requests: number;
+  errors: number;
+  updates: Record<string, unknown>;
+}
+
 const COOLDOWN_PREFIX = "__cooldown:";
+const SOFT_FASTTRACK_MS = 35_000;
+const BASE_ATTEMPT_TIMEOUT_MS = 22_000;
+const FALLBACK_ATTEMPT_TIMEOUT_MS = 14_000;
+
+// Process-local hot cache so concurrent requests on the same instance share
+// newly discovered 429/403 states in 0ms without waiting for DB roundtrips.
+const hotCacheGlobal = globalThis as typeof globalThis & {
+  __gemprismHotCooldowns?: Map<string, HotCooldownEntry>;
+  __gemprismHotDeadKeys?: Map<string, number>;
+};
+
+function getHotCooldowns() {
+  if (!hotCacheGlobal.__gemprismHotCooldowns) {
+    hotCacheGlobal.__gemprismHotCooldowns = new Map();
+  }
+  return hotCacheGlobal.__gemprismHotCooldowns;
+}
+
+function getHotDeadKeys() {
+  if (!hotCacheGlobal.__gemprismHotDeadKeys) {
+    hotCacheGlobal.__gemprismHotDeadKeys = new Map();
+  }
+  return hotCacheGlobal.__gemprismHotDeadKeys;
+}
 
 function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -44,17 +81,15 @@ function escapeRegex(value: string): string {
 function extractModelFromRequest(
   urlPath: string,
   payloadBuffer?: ArrayBuffer
-): { requestedModel: string | null; action: string | null; isBodyModel: boolean } {
+): { requestedModel: string | null; action: string | null } {
   const pathMatch = urlPath.match(/models\/([^/:]+)(?::([^/?]+))?/);
   if (pathMatch) {
     return {
       requestedModel: pathMatch[1],
       action: pathMatch[2] || "generateContent",
-      isBodyModel: false,
     };
   }
 
-  // Handle newer endpoints like v1beta/interactions where model lives inside JSON body
   if (payloadBuffer && payloadBuffer.byteLength > 0) {
     try {
       const parsed = JSON.parse(new TextDecoder().decode(payloadBuffer)) as { model?: string };
@@ -62,15 +97,14 @@ function extractModelFromRequest(
         return {
           requestedModel: parsed.model.replace(/^models\//i, "").trim(),
           action: "generateContent",
-          isBodyModel: true,
         };
       }
     } catch {
-      // Non-JSON body; proceed transparently
+      // Non-JSON payload
     }
   }
 
-  return { requestedModel: null, action: null, isBodyModel: false };
+  return { requestedModel: null, action: null };
 }
 
 function substituteModelInUrlPath(
@@ -105,6 +139,10 @@ function substituteModelInPayload(
   }
 }
 
+function isFastFallbackModel(modelId: string): boolean {
+  return modelId.includes("flash-lite") || modelId.startsWith("gemma");
+}
+
 export async function handler(
   req: Request,
   { params }: { params: Promise<{ path: string[] }> }
@@ -113,6 +151,7 @@ export async function handler(
     return new NextResponse(null, { status: 200 });
   }
 
+  const requestStart = Date.now();
   const reqUrl = new URL(req.url);
 
   // 1. Extract Gateway Token
@@ -142,7 +181,7 @@ export async function handler(
   }
   const userId = tokenData.user_id as string;
 
-  // 3. Read request body & resolve path
+  // 3. Parse URL & Payload
   const resolvedParams = await params;
   const urlPath = resolvedParams.path.join("/");
   const hasBody = !["GET", "HEAD", "OPTIONS"].includes(req.method);
@@ -150,7 +189,7 @@ export async function handler(
 
   const { requestedModel, action } = extractModelFromRequest(urlPath, originalPayload);
 
-  // 4. Fetch Key Pool & Full Per-User Telemetry
+  // 4. Fetch Key Pool & Live Telemetry
   const [keysReq, usageReq] = await Promise.all([
     admin.from("api_keys").select("*").eq("user_id", userId),
     admin.from("model_usage").select("*").eq("user_id", userId),
@@ -166,14 +205,13 @@ export async function handler(
     );
   }
 
-  // 5. Dynamically discover live models from Gemini API (cached 15 min per user)
+  // 5. Discover live models dynamically
   const historicalModelIds = usageRows.map((u) => u.model_name);
   let discovery = await discoverModelsForKeys(keys, {
     userId,
     historicalModelIds,
   });
 
-  // If the client requests a brand-new model not yet in our cache, trigger one live refresh
   if (
     requestedModel &&
     !discovery.models.some((m) => m.id === requestedModel.toLowerCase()) &&
@@ -188,8 +226,10 @@ export async function handler(
 
   const now = Date.now();
   const todayStr = getQuotaResetDateStr();
+  const hotCooldowns = getHotCooldowns();
+  const hotDeadKeys = getHotDeadKeys();
 
-  // Index live usage counts and per-(key, model) active cooldowns
+  // Index usage counts & DB cooldowns
   const usageMap = new Map<string, { rpd: number; rpm: number; windowStart: number }>();
   const modelCooldownMap = new Map<string, { until: number; isDaily: boolean }>();
 
@@ -214,7 +254,7 @@ export async function handler(
     usageMap.set(`${row.api_key_id}_${row.model_name}`, { rpd, rpm, windowStart });
   }
 
-  // Resolve target canonical model & cascading fallback chain
+  // Resolve target canonical model & build cascading fallback chain
   let modelsToTry: string[] = [];
   let originalModelName = requestedModel || "default";
 
@@ -226,6 +266,74 @@ export async function handler(
     modelsToTry = ["__passthrough__"];
   }
 
+  // Batched telemetry buffers flushed asynchronously via Next.js after()
+  const keyDeltaMap = new Map<string, PendingKeyDelta>();
+  const cooldownWriteMap = new Map<
+    string,
+    { apiKeyId: string; modelName: string; until: number; isDaily: boolean; statusCode: number }
+  >();
+  let successUsageWrite: {
+    apiKeyId: string;
+    modelName: string;
+    windowStart: number;
+  } | null = null;
+
+  const queueKeyDelta = (
+    keyId: string,
+    inc: { requests?: number; errors?: number },
+    updates: Record<string, unknown>
+  ) => {
+    const existing = keyDeltaMap.get(keyId) || { requests: 0, errors: 0, updates: {} };
+    existing.requests += inc.requests || 0;
+    existing.errors += inc.errors || 0;
+    existing.updates = { ...existing.updates, ...updates };
+    keyDeltaMap.set(keyId, existing);
+  };
+
+  const flushTelemetry = () => {
+    const ops: Promise<void>[] = [];
+
+    for (const [keyId, delta] of keyDeltaMap.entries()) {
+      ops.push(updateKeyState(keyId, { requests: delta.requests, errors: delta.errors }, delta.updates));
+    }
+
+    for (const cd of cooldownWriteMap.values()) {
+      ops.push(
+        recordModelCooldown(
+          userId,
+          cd.apiKeyId,
+          cd.modelName,
+          todayStr,
+          cd.until,
+          cd.isDaily,
+          cd.statusCode
+        )
+      );
+    }
+
+    if (successUsageWrite) {
+      ops.push(
+        recordModelUsage(
+          userId,
+          successUsageWrite.apiKeyId,
+          successUsageWrite.modelName,
+          todayStr,
+          successUsageWrite.windowStart
+        )
+      );
+    }
+
+    if (ops.length === 0) return;
+
+    try {
+      after(async () => {
+        await Promise.allSettled(ops);
+      });
+    } catch {
+      void Promise.allSettled(ops);
+    }
+  };
+
   let preferredErrorResponse: NextResponse | null = null;
   let lastErrorResponse: NextResponse | null = null;
   const attemptedModels: string[] = [];
@@ -235,39 +343,53 @@ export async function handler(
     const currentModelName = modelsToTry[m];
     const isFallbackModel = m > 0;
     const isPassthrough = currentModelName === "__passthrough__";
+    const elapsedMs = Date.now() - requestStart;
 
-    if (!isPassthrough) {
-      attemptedModels.push(currentModelName);
+    // If slow upper models already burned >35s, skip slow intermediate steps and
+    // jump directly to high-availability fast tiers (flash-lite / gemma).
+    if (
+      isFallbackModel &&
+      !isPassthrough &&
+      elapsedMs > SOFT_FASTTRACK_MS &&
+      !isFastFallbackModel(currentModelName) &&
+      modelsToTry.slice(m + 1).some(isFastFallbackModel)
+    ) {
+      continue;
     }
 
-    // Build sorted candidate keys for this specific model (skipping cooling key+model pairs)
+    const attemptNow = Date.now();
     const candidateKeys = keys
       .map((key) => {
         let keyRecovered = false;
         let effectiveStatus = key.status;
 
-        if (effectiveStatus === "cooling" && now > (key.cooldown_until || 0)) {
+        const hotDeadUntil = hotDeadKeys.get(key.id) || 0;
+        if (hotDeadUntil > attemptNow) {
+          effectiveStatus = "dead";
+        } else if (effectiveStatus === "cooling" && attemptNow > (key.cooldown_until || 0)) {
           effectiveStatus = "healthy";
           keyRecovered = true;
         }
 
-        const pairCooling = !isPassthrough
-          ? modelCooldownMap.has(`${key.id}_${currentModelName}`)
-          : false;
+        const pairKey = `${key.id}_${currentModelName}`;
+        const dbCooldown = !isPassthrough && modelCooldownMap.has(pairKey);
+        const hotCd = !isPassthrough ? hotCooldowns.get(pairKey) : undefined;
+        const hotCooldownValid = Boolean(
+          hotCd && hotCd.until > attemptNow && (!hotCd.isDaily || hotCd.todayStr === todayStr)
+        );
+        if (hotCd && !hotCooldownValid) {
+          hotCooldowns.delete(pairKey);
+        }
 
         const stats = !isPassthrough
-          ? usageMap.get(`${key.id}_${currentModelName}`) || {
-              rpd: 0,
-              rpm: 0,
-              windowStart: now,
-            }
-          : { rpd: 0, rpm: 0, windowStart: now };
+          ? usageMap.get(pairKey) || { rpd: 0, rpm: 0, windowStart: attemptNow }
+          : { rpd: 0, rpm: 0, windowStart: attemptNow };
 
         return {
           ...key,
           effectiveStatus,
           keyRecovered,
-          pairCooling,
+          pairCooling: dbCooldown || hotCooldownValid,
           modelRpd: stats.rpd,
           modelRpm: stats.rpm,
           windowStart: stats.windowStart,
@@ -281,13 +403,22 @@ export async function handler(
       });
 
     if (candidateKeys.length === 0) {
-      // Every key is dead or already in cooldown for this specific model -> cascade immediately
       continue;
+    }
+
+    if (!isPassthrough) {
+      attemptedModels.push(currentModelName);
     }
 
     let overloadedHitsOnModel = 0;
 
     for (const key of candidateKeys) {
+      const hasMoreModels = m < modelsToTry.length - 1;
+      const attemptTimeoutMs =
+        hasMoreModels && (isFallbackModel || Date.now() - requestStart > 20_000)
+          ? FALLBACK_ATTEMPT_TIMEOUT_MS
+          : BASE_ATTEMPT_TIMEOUT_MS;
+
       try {
         const currentUrlPath =
           !isPassthrough && requestedModel
@@ -332,29 +463,31 @@ export async function handler(
           method: req.method,
           headers: outboundHeaders,
           body: currentPayload,
+          signal: AbortSignal.timeout(attemptTimeoutMs),
         });
 
         const responseHeaders = new Headers(response.headers);
         responseHeaders.delete("content-encoding");
         responseHeaders.delete("content-length");
 
+        const opNow = Date.now();
+
         if (response.ok) {
-          // Record successful execution telemetry
-          const telemetryOps: Promise<void>[] = [
-            updateKeyState(
-              key.id,
-              { requests: 1 },
-              {
-                last_used: now,
-                ...(key.keyRecovered ? { status: "healthy", cooldown_until: null } : {}),
-              }
-            ),
-          ];
+          queueKeyDelta(
+            key.id,
+            { requests: 1 },
+            {
+              last_used: opNow,
+              ...(key.keyRecovered ? { status: "healthy", cooldown_until: null } : {}),
+            }
+          );
 
           if (!isPassthrough) {
-            telemetryOps.push(
-              recordModelUsage(userId, key.id, currentModelName, todayStr, key.windowStart)
-            );
+            successUsageWrite = {
+              apiKeyId: key.id,
+              modelName: currentModelName,
+              windowStart: key.windowStart,
+            };
             responseHeaders.set("X-Gemprism-Model", currentModelName);
             responseHeaders.set("X-Gemprism-Original-Model", originalModelName);
             if (currentModelName !== originalModelName) {
@@ -368,9 +501,7 @@ export async function handler(
             responseHeaders.set("X-Gemprism-Key", key.name);
           }
 
-          await Promise.all(telemetryOps).catch((err) =>
-            console.error("[GemPrism] Telemetry update warning:", err)
-          );
+          flushTelemetry();
 
           return new NextResponse(response.body, {
             status: response.status,
@@ -378,9 +509,9 @@ export async function handler(
           });
         }
 
-        // Handle upstream error status intelligently
+        // Upstream returned an error status
         const errorBody = await response.text();
-        const errInfo = classifyErrorResponse(response.status, errorBody, now);
+        const errInfo = classifyErrorResponse(response.status, errorBody, opNow);
 
         const errorResponse = new NextResponse(errorBody, {
           status: response.status,
@@ -389,28 +520,29 @@ export async function handler(
         lastErrorResponse = errorResponse;
 
         if (errInfo.kind === "dead_key") {
-          await updateKeyState(
+          hotDeadKeys.set(key.id, opNow + 5 * 60_000);
+          queueKeyDelta(
             key.id,
             { errors: 1, requests: 1 },
             {
               status: "dead",
               last_error: errInfo.reason,
-              last_used: now,
+              last_used: opNow,
             }
           );
           if (!preferredErrorResponse) preferredErrorResponse = errorResponse;
-          continue; // Try next key on same model
+          continue;
         }
 
         if (errInfo.kind === "balance_exhausted") {
-          await updateKeyState(
+          queueKeyDelta(
             key.id,
             { errors: 1, requests: 1 },
             {
               status: "cooling",
-              cooldown_until: now + errInfo.cooldownMs,
+              cooldown_until: opNow + errInfo.cooldownMs,
               last_error: errInfo.reason,
-              last_used: now,
+              last_used: opNow,
             }
           );
           if (!preferredErrorResponse) preferredErrorResponse = errorResponse;
@@ -422,73 +554,65 @@ export async function handler(
           errInfo.kind === "daily_exhausted" ||
           errInfo.kind === "minute_rate_limit"
         ) {
-          const until = now + errInfo.cooldownMs;
-          const ops: Promise<void>[] = [
-            updateKeyState(
-              key.id,
-              { errors: 1, requests: 1 },
-              {
-                // Keep api_keys.status healthy so other models continue working on this key
-                status: "healthy",
-                cooldown_until: null,
-                last_error: `${errInfo.reason} [${currentModelName}]`,
-                last_used: now,
-              }
-            ),
-          ];
-
-          if (!isPassthrough) {
-            modelCooldownMap.set(`${key.id}_${currentModelName}`, {
-              until,
-              isDaily: errInfo.isDaily,
-            });
-            ops.push(
-              recordModelCooldown(
-                userId,
-                key.id,
-                currentModelName,
-                todayStr,
-                until,
-                errInfo.isDaily,
-                response.status
-              )
-            );
-          }
-
-          await Promise.all(ops).catch((err) =>
-            console.error("[GemPrism] Cooldown persist error:", err)
+          const until = opNow + errInfo.cooldownMs;
+          queueKeyDelta(
+            key.id,
+            { errors: 1, requests: 1 },
+            {
+              status: "healthy",
+              cooldown_until: null,
+              last_error: `${errInfo.reason} [${currentModelName}]`,
+              last_used: opNow,
+            }
           );
 
+          if (!isPassthrough) {
+            const pairKey = `${key.id}_${currentModelName}`;
+            modelCooldownMap.set(pairKey, { until, isDaily: errInfo.isDaily });
+            hotCooldowns.set(pairKey, {
+              until,
+              isDaily: errInfo.isDaily,
+              todayStr,
+              statusCode: response.status,
+            });
+            cooldownWriteMap.set(pairKey, {
+              apiKeyId: key.id,
+              modelName: currentModelName,
+              until,
+              isDaily: errInfo.isDaily,
+              statusCode: response.status,
+            });
+          }
+
           if (!preferredErrorResponse) preferredErrorResponse = errorResponse;
-          continue; // Try next key; if all keys fail, model loop advances automatically
+          continue;
         }
 
         if (errInfo.kind === "model_not_found") {
-          await updateKeyState(
+          queueKeyDelta(
             key.id,
             { errors: 1, requests: 1 },
             {
               last_error: `404 Model unavailable [${currentModelName}]`,
-              last_used: now,
+              last_used: opNow,
             }
           );
           if (!preferredErrorResponse) preferredErrorResponse = errorResponse;
-          break; // Model does not exist on Google; jump immediately to next fallback model
+          break; // Cascade immediately to next model
         }
 
         if (errInfo.kind === "overloaded") {
           overloadedHitsOnModel++;
-          await updateKeyState(
+          queueKeyDelta(
             key.id,
             { errors: 1, requests: 1 },
             {
               last_error: `503 Overloaded [${currentModelName}]`,
-              last_used: now,
+              last_used: opNow,
             }
           );
           if (!preferredErrorResponse) preferredErrorResponse = errorResponse;
 
-          // Try at most 1 backup key on 503, then degrade to next model so latency stays low
           if (overloadedHitsOnModel >= 2 || candidateKeys.length === 1) {
             break;
           }
@@ -496,44 +620,63 @@ export async function handler(
         }
 
         if (errInfo.kind === "server_error") {
-          await updateKeyState(
+          queueKeyDelta(
             key.id,
             { errors: 1, requests: 1 },
             {
               last_error: `${errInfo.reason} [${currentModelName}]`,
-              last_used: now,
+              last_used: opNow,
             }
           );
           if (!preferredErrorResponse) preferredErrorResponse = errorResponse;
-          continue; // Try next key on transient 5xx
+          continue;
         }
 
         // Client error (400 etc.)
-        await updateKeyState(
+        queueKeyDelta(
           key.id,
           { errors: 1, requests: 1 },
           {
             last_error: `API Error ${response.status} [${currentModelName}]`,
-            last_used: now,
+            last_used: opNow,
           }
         );
 
         if (!isFallbackModel) {
-          // Primary requested model rejected the request as malformed -> return 400 immediately
+          flushTelemetry();
           return errorResponse;
         }
 
-        // A fallback model (e.g. older Flash or Gemma) may not support a newer feature like thinkingConfig.
-        // Skip this incompatible fallback model and try the next candidate instead of failing!
+        // Incompatible fallback model parameter (e.g. thinkingConfig on legacy model);
+        // skip this model and try the next candidate.
         break;
       } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : "Unknown network error";
-        await updateKeyState(key.id, { errors: 1 }, { last_error: message }).catch(() => {});
-        lastErrorResponse = NextResponse.json({ error: message }, { status: 502 });
+        const isTimeout =
+          err instanceof Error &&
+          (err.name === "TimeoutError" || err.name === "AbortError");
+        const message = isTimeout
+          ? `Upstream timeout (${Math.round(attemptTimeoutMs / 1000)}s) [${currentModelName}]`
+          : err instanceof Error
+            ? err.message
+            : "Unknown network error";
+
+        queueKeyDelta(key.id, { errors: 1 }, { last_error: message });
+        lastErrorResponse = NextResponse.json(
+          { error: message },
+          { status: isTimeout ? 504 : 502 }
+        );
+
+        // If this model timed out on Google's backend and fallbacks remain,
+        // move straight to the next faster model instead of stalling on more keys.
+        if (isTimeout && hasMoreModels) {
+          break;
+        }
         continue;
       }
     }
   }
+
+  flushTelemetry();
 
   if (preferredErrorResponse) return preferredErrorResponse;
   if (lastErrorResponse) return lastErrorResponse;
