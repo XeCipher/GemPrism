@@ -1,4 +1,3 @@
-// next.config.ts
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
@@ -11,7 +10,10 @@ const nextConfig: NextConfig = {
           { key: "Access-Control-Allow-Origin", value: "*" },
           { key: "Access-Control-Allow-Methods", value: "GET, OPTIONS, PATCH, DELETE, POST, PUT" },
           { key: "Access-Control-Allow-Headers", value: "*" },
-          { key: "Access-Control-Expose-Headers", value: "X-Gemprism-Fallback" },
+          {
+            key: "Access-Control-Expose-Headers",
+            value: "X-Gemprism-Fallback, X-Gemprism-Model, X-Gemprism-Original-Model, X-Gemprism-Key",
+          },
         ],
       },
     ];

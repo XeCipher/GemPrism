@@ -24,29 +24,29 @@ interface ApiKeySim { id: number; status: KeyStatus; rpm: number }
 /* ─── Constants ─── */
 const STATUSES: KeyStatus[] = ["healthy", "healthy", "healthy", "healthy", "cooling", "dead"];
 
-const FEATURES =[
+const FEATURES = [
   {
     icon: Zap,
     title: "Intelligent Load Balancing",
-    desc: "Distributes traffic across your API key pool in real time, actively tracking and favoring keys with the lowest RPM and RPD counts for the exact model you requested.",
+    desc: "Distributes traffic across your API key pool in real time, actively tracking and favoring keys with the lowest per-model request load.",
   },
   {
     icon: Shield,
-    title: "Auto-Cooldown & Retry",
-    desc: "Hitting a 429 rate-limit? The exact API key is sidelined for 90 seconds and the request is instantly re-routed to the next healthy key automatically.",
+    title: "Cascading Key & Model Failover",
+    desc: "Hit a 429 or 503? GemPrism isolates that exact key-model pair, routes across remaining keys, and seamlessly steps down to the next compatible model so responses keep flowing.",
   },
   {
     icon: Activity,
-    title: "Live Telemetry",
-    desc: "Track API Key health, error rates, and granular per-model usage across your pool from a real-time dashboard.",
+    title: "Live Model Discovery & Graphs",
+    desc: "Syncs models directly from the Gemini API with zero hardcoded limit tables, paired with interactive key-by-model charts and cooldown heatmaps.",
   },
 ];
 
-const STEPS =[
+const STEPS = [
   "Create a free account and add your Gemini API keys.",
   "Receive a single secure Gateway Token for your project.",
   "Point the Google GenAI SDK's baseUrl at GemPrism.",
-  "Watch live as we balance, retry, and recover failed keys.",
+  "Watch live as we balance keys, discover new models, and cascade failovers.",
 ];
 
 const CODE = `import { GoogleGenAI } from "@google/genai";
@@ -82,13 +82,13 @@ function ApiKeyGrid() {
       }))
     );
     setMounted(true);
-  },[]);
+  }, []);
 
   useEffect(() => {
     if (!mounted) return;
     const t = setInterval(() => {
-      setKeys(prev =>
-        prev.map(k => {
+      setKeys((prev) =>
+        prev.map((k) => {
           if (Math.random() < 0.12) {
             const s = STATUSES[Math.floor(Math.random() * STATUSES.length)];
             return { ...k, status: s, rpm: Math.floor(Math.random() * 14) };
@@ -120,7 +120,7 @@ function ApiKeyGrid() {
       </div>
 
       <div className="grid grid-cols-6 gap-2 sm:gap-3">
-        {keys.map(k => (
+        {keys.map((k) => (
           <div key={k.id} className="flex flex-col items-center gap-1.5 group cursor-default">
             <div
               className={`w-5 h-5 sm:w-6 sm:h-6 rounded-sm sm:rounded-md transition-all duration-500 ${color[k.status]} ${
@@ -135,10 +135,10 @@ function ApiKeyGrid() {
       </div>
 
       <div className="mt-6 pt-4 border-t border-neutral-800/60 flex flex-wrap items-center justify-between font-[family-name:var(--font-mono)] text-[9px] sm:text-[10px] md:text-xs font-medium text-neutral-500 gap-2">
-        {(["healthy", "cooling", "dead"] as KeyStatus[]).map(s => (
+        {(["healthy", "cooling", "dead"] as KeyStatus[]).map((s) => (
           <span key={s} className="flex items-center gap-1.5">
             <span className={`w-2 h-2 rounded-sm ${color[s].split(" ")[0]}`} />
-            {s.toUpperCase()}:&nbsp;{keys.filter(k => k.status === s).length}
+            {s.toUpperCase()}:&nbsp;{keys.filter((k) => k.status === s).length}
           </span>
         ))}
       </div>
@@ -206,8 +206,8 @@ export default function LandingPage() {
 
             <p className="text-base sm:text-lg text-neutral-400 leading-relaxed mb-8 sm:mb-10 max-w-lg mx-auto lg:mx-0">
               GemPrism pools your Google Gemini API keys into a single gateway endpoint.
-              Requests are load-balanced based on exact model limits, keys cool down automatically, and
-              dead keys are retired, all without requiring changes to your SDK code.
+              Models are discovered dynamically from Google, keys cool down per model automatically,
+              and exhausted tiers cascade seamlessly to older Flash, Flash-Lite, and Gemma models.
             </p>
 
             <div className="flex flex-col sm:flex-row gap-3 sm:gap-4 w-full sm:w-auto">
@@ -228,7 +228,7 @@ export default function LandingPage() {
             <div className="mt-12 flex flex-wrap justify-center lg:justify-start gap-x-8 gap-y-4 text-sm text-neutral-500">
               {[
                 { v: "100%", l: "Open source" },
-                { v: "0ms",  l: "Cold starts" },
+                { v: "Auto",  l: "Model discovery" },
                 { v: "BYOK", l: "Your keys, your control" },
               ].map(({ v, l }) => (
                 <div key={l} className="flex flex-col items-center lg:items-start">
@@ -333,13 +333,12 @@ export default function LandingPage() {
           </p>
           <h2 className="text-3xl sm:text-4xl font-bold text-white mb-12 lg:mb-16 tracking-tight">Request flow</h2>
 
-          {/* Flowchart container (Responsive Flex/Grid logic to ensure it doesn't break UI on mobile) */}
           <div className="flex flex-col lg:flex-row items-center justify-center gap-0">
             {[
-              { label: "Your App",        sub: "Any GenAI SDK",          color: "border-neutral-700  bg-[#0a0a0a]" },
-              { label: "GemPrism",        sub: "Edge Proxy",             color: "border-emerald-500/40 bg-emerald-500/10 text-emerald-400 shadow-[0_0_20px_rgba(16,185,129,0.1)]" },
-              { label: "Key Pool",        sub: "Your API Keys",          color: "border-neutral-700  bg-[#0a0a0a]" },
-              { label: "Google AI",       sub: "Gen Language API",       color: "border-neutral-700  bg-[#0a0a0a]" },
+              { label: "Your App",  sub: "Any GenAI SDK",    color: "border-neutral-700  bg-[#0a0a0a]" },
+              { label: "GemPrism",  sub: "Smart Failover",   color: "border-emerald-500/40 bg-emerald-500/10 text-emerald-400 shadow-[0_0_20px_rgba(16,185,129,0.1)]" },
+              { label: "Key Pool",  sub: "Your API Keys",    color: "border-neutral-700  bg-[#0a0a0a]" },
+              { label: "Google AI", sub: "Gen Language API", color: "border-neutral-700  bg-[#0a0a0a]" },
             ].map((box, i, arr) => (
               <React.Fragment key={i}>
                 <div className={`border rounded-2xl px-6 py-5 text-center w-full max-w-[220px] sm:w-auto sm:min-w-[160px] ${box.color}`}>
@@ -362,7 +361,7 @@ export default function LandingPage() {
 
           <div className="mt-12 inline-flex flex-col sm:flex-row items-start sm:items-center gap-4 sm:gap-8 text-xs sm:text-sm font-medium text-neutral-500 text-left">
             <span className="flex items-center gap-2"><span className="w-2.5 h-2.5 rounded-sm bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]" /> Healthy - routes normally</span>
-            <span className="flex items-center gap-2"><span className="w-2.5 h-2.5 rounded-sm bg-amber-400 shadow-[0_0_8px_rgba(251,191,36,0.5)]" /> Cooling - retried after 90s</span>
+            <span className="flex items-center gap-2"><span className="w-2.5 h-2.5 rounded-sm bg-amber-400 shadow-[0_0_8px_rgba(251,191,36,0.5)]" /> Cooling - per-model 429 cooldown + fallback</span>
             <span className="flex items-center gap-2"><span className="w-2.5 h-2.5 rounded-sm bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.4)]"  /> Dead - retired from pool</span>
           </div>
         </div>
