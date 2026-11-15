@@ -42,6 +42,11 @@ interface HotCooldownEntry {
   statusCode: number;
 }
 
+interface HotBurstEntry {
+  count: number;
+  windowStart: number;
+}
+
 interface PendingKeyDelta {
   requests: number;
   errors: number;
@@ -49,15 +54,17 @@ interface PendingKeyDelta {
 }
 
 const COOLDOWN_PREFIX = "__cooldown:";
-const SOFT_FASTTRACK_MS = 35_000;
-const BASE_ATTEMPT_TIMEOUT_MS = 22_000;
+const BASE_ATTEMPT_TIMEOUT_MS = 20_000;
 const FALLBACK_ATTEMPT_TIMEOUT_MS = 14_000;
+const OVERLOAD_CACHE_MS = 10_000;
 
-// Process-local hot cache so concurrent requests on the same instance share
-// newly discovered 429/403 states in 0ms without waiting for DB roundtrips.
+// Process-local hot state shared across concurrent requests in the same Node instance
 const hotCacheGlobal = globalThis as typeof globalThis & {
   __gemprismHotCooldowns?: Map<string, HotCooldownEntry>;
   __gemprismHotDeadKeys?: Map<string, number>;
+  __gemprismHotOverloadedModels?: Map<string, number>;
+  __gemprismHotInFlight?: Map<string, number>;
+  __gemprismHotBurstRpm?: Map<string, HotBurstEntry>;
 };
 
 function getHotCooldowns() {
@@ -72,6 +79,46 @@ function getHotDeadKeys() {
     hotCacheGlobal.__gemprismHotDeadKeys = new Map();
   }
   return hotCacheGlobal.__gemprismHotDeadKeys;
+}
+
+function getHotOverloadedModels() {
+  if (!hotCacheGlobal.__gemprismHotOverloadedModels) {
+    hotCacheGlobal.__gemprismHotOverloadedModels = new Map();
+  }
+  return hotCacheGlobal.__gemprismHotOverloadedModels;
+}
+
+function getHotInFlight() {
+  if (!hotCacheGlobal.__gemprismHotInFlight) {
+    hotCacheGlobal.__gemprismHotInFlight = new Map();
+  }
+  return hotCacheGlobal.__gemprismHotInFlight;
+}
+
+function getHotBurstRpm() {
+  if (!hotCacheGlobal.__gemprismHotBurstRpm) {
+    hotCacheGlobal.__gemprismHotBurstRpm = new Map();
+  }
+  return hotCacheGlobal.__gemprismHotBurstRpm;
+}
+
+function getBurstCount(map: Map<string, HotBurstEntry>, pairKey: string, now: number): number {
+  const entry = map.get(pairKey);
+  if (!entry) return 0;
+  if (now - entry.windowStart > 60_000) {
+    map.delete(pairKey);
+    return 0;
+  }
+  return entry.count;
+}
+
+function bumpBurstCount(map: Map<string, HotBurstEntry>, pairKey: string, now: number) {
+  const entry = map.get(pairKey);
+  if (!entry || now - entry.windowStart > 60_000) {
+    map.set(pairKey, { count: 1, windowStart: now });
+  } else {
+    entry.count += 1;
+  }
 }
 
 function escapeRegex(value: string): string {
@@ -139,10 +186,6 @@ function substituteModelInPayload(
   }
 }
 
-function isFastFallbackModel(modelId: string): boolean {
-  return modelId.includes("flash-lite") || modelId.startsWith("gemma");
-}
-
 export async function handler(
   req: Request,
   { params }: { params: Promise<{ path: string[] }> }
@@ -151,7 +194,6 @@ export async function handler(
     return new NextResponse(null, { status: 200 });
   }
 
-  const requestStart = Date.now();
   const reqUrl = new URL(req.url);
 
   // 1. Extract Gateway Token
@@ -228,6 +270,9 @@ export async function handler(
   const todayStr = getQuotaResetDateStr();
   const hotCooldowns = getHotCooldowns();
   const hotDeadKeys = getHotDeadKeys();
+  const hotOverloaded = getHotOverloadedModels();
+  const hotInFlight = getHotInFlight();
+  const hotBurstRpm = getHotBurstRpm();
 
   // Index usage counts & DB cooldowns
   const usageMap = new Map<string, { rpd: number; rpm: number; windowStart: number }>();
@@ -294,7 +339,13 @@ export async function handler(
     const ops: Promise<void>[] = [];
 
     for (const [keyId, delta] of keyDeltaMap.entries()) {
-      ops.push(updateKeyState(keyId, { requests: delta.requests, errors: delta.errors }, delta.updates));
+      ops.push(
+        updateKeyState(
+          keyId,
+          { requests: delta.requests, errors: delta.errors },
+          delta.updates
+        )
+      );
     }
 
     for (const cd of cooldownWriteMap.values()) {
@@ -338,26 +389,25 @@ export async function handler(
   let lastErrorResponse: NextResponse | null = null;
   const attemptedModels: string[] = [];
 
-  // 6. Cascading Model Loop -> Key Pool Loop
+  // 6. Cascading Model Loop -> Key Pool Loop (strictly preserves tier order)
   for (let m = 0; m < modelsToTry.length; m++) {
     const currentModelName = modelsToTry[m];
     const isFallbackModel = m > 0;
     const isPassthrough = currentModelName === "__passthrough__";
-    const elapsedMs = Date.now() - requestStart;
+    const hasMoreModels = m < modelsToTry.length - 1;
+    const attemptNow = Date.now();
 
-    // If slow upper models already burned >35s, skip slow intermediate steps and
-    // jump directly to high-availability fast tiers (flash-lite / gemma).
-    if (
-      isFallbackModel &&
-      !isPassthrough &&
-      elapsedMs > SOFT_FASTTRACK_MS &&
-      !isFastFallbackModel(currentModelName) &&
-      modelsToTry.slice(m + 1).some(isFastFallbackModel)
-    ) {
-      continue;
+    // Skip briefly-overloaded model if we still have healthy models left in the chain
+    if (!isPassthrough && hasMoreModels) {
+      const overloadedUntil = hotOverloaded.get(currentModelName) || 0;
+      if (overloadedUntil > attemptNow) {
+        continue;
+      }
+      if (overloadedUntil > 0) {
+        hotOverloaded.delete(currentModelName);
+      }
     }
 
-    const attemptNow = Date.now();
     const candidateKeys = keys
       .map((key) => {
         let keyRecovered = false;
@@ -385,6 +435,10 @@ export async function handler(
           ? usageMap.get(pairKey) || { rpd: 0, rpm: 0, windowStart: attemptNow }
           : { rpd: 0, rpm: 0, windowStart: attemptNow };
 
+        const inFlight = hotInFlight.get(pairKey) || 0;
+        const burstRpm = getBurstCount(hotBurstRpm, pairKey, attemptNow);
+        const keyTotalInFlight = hotInFlight.get(key.id) || 0;
+
         return {
           ...key,
           effectiveStatus,
@@ -392,13 +446,21 @@ export async function handler(
           pairCooling: dbCooldown || hotCooldownValid,
           modelRpd: stats.rpd,
           modelRpm: stats.rpm,
+          effectiveRpm: Math.max(stats.rpm, burstRpm),
+          inFlight,
+          keyTotalInFlight,
           windowStart: stats.windowStart,
         };
       })
       .filter((k) => k.effectiveStatus === "healthy" && !k.pairCooling)
       .sort((a, b) => {
+        // Spread concurrent requests evenly across all healthy keys first
+        if (a.inFlight !== b.inFlight) return a.inFlight - b.inFlight;
+        if (a.effectiveRpm !== b.effectiveRpm) return a.effectiveRpm - b.effectiveRpm;
         if (a.modelRpd !== b.modelRpd) return a.modelRpd - b.modelRpd;
-        if (a.modelRpm !== b.modelRpm) return a.modelRpm - b.modelRpm;
+        if (a.keyTotalInFlight !== b.keyTotalInFlight) {
+          return a.keyTotalInFlight - b.keyTotalInFlight;
+        }
         return (a.last_used || 0) - (b.last_used || 0);
       });
 
@@ -410,14 +472,15 @@ export async function handler(
       attemptedModels.push(currentModelName);
     }
 
-    let overloadedHitsOnModel = 0;
-
     for (const key of candidateKeys) {
-      const hasMoreModels = m < modelsToTry.length - 1;
       const attemptTimeoutMs =
-        hasMoreModels && (isFallbackModel || Date.now() - requestStart > 20_000)
-          ? FALLBACK_ATTEMPT_TIMEOUT_MS
-          : BASE_ATTEMPT_TIMEOUT_MS;
+        hasMoreModels && isFallbackModel ? FALLBACK_ATTEMPT_TIMEOUT_MS : BASE_ATTEMPT_TIMEOUT_MS;
+
+      const pairKey = `${key.id}_${currentModelName}`;
+      const dispatchTime = Date.now();
+      hotInFlight.set(pairKey, (hotInFlight.get(pairKey) || 0) + 1);
+      hotInFlight.set(key.id, (hotInFlight.get(key.id) || 0) + 1);
+      bumpBurstCount(hotBurstRpm, pairKey, dispatchTime);
 
       try {
         const currentUrlPath =
@@ -509,7 +572,6 @@ export async function handler(
           });
         }
 
-        // Upstream returned an error status
         const errorBody = await response.text();
         const errInfo = classifyErrorResponse(response.status, errorBody, opNow);
 
@@ -567,7 +629,6 @@ export async function handler(
           );
 
           if (!isPassthrough) {
-            const pairKey = `${key.id}_${currentModelName}`;
             modelCooldownMap.set(pairKey, { until, isDaily: errInfo.isDaily });
             hotCooldowns.set(pairKey, {
               until,
@@ -598,11 +659,10 @@ export async function handler(
             }
           );
           if (!preferredErrorResponse) preferredErrorResponse = errorResponse;
-          break; // Cascade immediately to next model
+          break;
         }
 
         if (errInfo.kind === "overloaded") {
-          overloadedHitsOnModel++;
           queueKeyDelta(
             key.id,
             { errors: 1, requests: 1 },
@@ -613,8 +673,9 @@ export async function handler(
           );
           if (!preferredErrorResponse) preferredErrorResponse = errorResponse;
 
-          if (overloadedHitsOnModel >= 2 || candidateKeys.length === 1) {
-            break;
+          if (!isPassthrough && hasMoreModels) {
+            hotOverloaded.set(currentModelName, opNow + OVERLOAD_CACHE_MS);
+            break; // Cascade immediately to the next Flash/model tier
           }
           continue;
         }
@@ -647,8 +708,7 @@ export async function handler(
           return errorResponse;
         }
 
-        // Incompatible fallback model parameter (e.g. thinkingConfig on legacy model);
-        // skip this model and try the next candidate.
+        // Skip incompatible fallback model and continue down the chain
         break;
       } catch (err: unknown) {
         const isTimeout =
@@ -666,12 +726,16 @@ export async function handler(
           { status: isTimeout ? 504 : 502 }
         );
 
-        // If this model timed out on Google's backend and fallbacks remain,
-        // move straight to the next faster model instead of stalling on more keys.
         if (isTimeout && hasMoreModels) {
+          if (!isPassthrough) {
+            hotOverloaded.set(currentModelName, Date.now() + OVERLOAD_CACHE_MS);
+          }
           break;
         }
         continue;
+      } finally {
+        hotInFlight.set(pairKey, Math.max(0, (hotInFlight.get(pairKey) || 1) - 1));
+        hotInFlight.set(key.id, Math.max(0, (hotInFlight.get(key.id) || 1) - 1));
       }
     }
   }
